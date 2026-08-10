@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { width: 300px; font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 13px; color: #e6e8ec; background: #14161c; }
+  .header { display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .title { font-weight: 700; font-size: 15px; letter-spacing: 0.02em; }
+  .title span { color: #00c4e8; }
+  .sub { font-size: 10px; color: #6b7280; margin-top: 2px; }
+  .section { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em;
+    color: #7c8390; margin-bottom: 7px; display: flex; justify-content: space-between; }
+  .seg { display: flex; gap: 5px; }
+  .seg button { flex: 1; padding: 8px 0; background: #23262e; border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 7px; color: #aab; font-size: 12px; cursor: pointer; transition: all .12s; }
+  .seg button:hover { background: #2c303a; }
+  .seg button.active { background: rgba(0,165,200,0.16); border-color: rgba(0,196,232,0.4); color: #00c4e8; font-weight: 600; }
+  .hint { font-size: 10px; color: #6b7280; margin-top: 7px; line-height: 1.5; }
+  .warn { color: #e0a24a; }
+  .row { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; }
+  .row-label { font-size: 12px; color: #cbd0d8; }
+  .row-desc { font-size: 10px; color: #6b7280; margin-top: 1px; }
+  .toggle { position: relative; width: 38px; height: 21px; flex: 0 0 auto; cursor: pointer; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .track { position: absolute; inset: 0; background: #333842; border-radius: 11px; transition: background .18s; }
+  .toggle input:checked + .track { background: #00a5c8; }
+  .thumb { position: absolute; top: 3px; left: 3px; width: 15px; height: 15px; background: #fff;
+    border-radius: 50%; transition: transform .18s; }
+  .toggle input:checked ~ .thumb { transform: translateX(17px); }
+  .footer { padding: 11px 16px; font-size: 10px; color: #4a4f5a; text-align: center; }
+  .footer a { color: #00a5c8; text-decoration: none; display: inline-block; margin-top: 5px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div class="title">Web<span>VSR</span></div>
+      <div class="sub">Real-time video super-resolution</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label"><span>GPU load</span><span class="hint" style="margin:0">smoothness first</span></div>
+    <div class="seg" id="perf">
+      <button data-v="light">Light</button>
+      <button data-v="balanced">Balanced</button>
+      <button data-v="max">Max</button>
+    </div>
+    <div class="hint" id="perfHint"></div>
+  </div>
+
+  <div class="section">
+    <div class="label">Quality (model intensity)</div>
+    <div class="seg" id="quality">
+      <button data-v="fast">Fast</button>
+      <button data-v="medium">Medium</button>
+      <button data-v="quality">Quality</button>
+    </div>
+    <div class="hint" id="qualHint"></div>
+  </div>
+
+  <div class="section">
+    <div class="label">Target resolution (× base)</div>
+    <div class="seg" id="scale">
+      <button data-v="1.5">1.5×</button>
+      <button data-v="2">2×</button>
+      <button data-v="3">3×</button>
+    </div>
+    <div class="hint" id="scaleHint"></div>
+  </div>
+
+  <div class="section">
+    <div class="label">Sharpness</div>
+    <div class="seg" id="sharp">
+      <button data-v="0">Off</button>
+      <button data-v="0.2">Low</button>
+      <button data-v="0.35">Med</button>
+      <button data-v="0.55">High</button>
+    </div>
+    <div class="hint">Contrast-adaptive sharpening on top of the upscale — adds crispness without halos.</div>
+  </div>
+
+  <div class="section">
+    <div class="row">
+      <div><div class="row-label">Pause when hidden/paused</div><div class="row-desc">Stops using the GPU when you're not watching</div></div>
+      <label class="toggle"><input type="checkbox" id="autoPause"><span class="track"></span><span class="thumb"></span></label>
+    </div>
+    <div class="row">
+      <div><div class="row-label">Remember on/off</div><div class="row-desc">Re-enable automatically on new videos</div></div>
+      <label class="toggle"><input type="checkbox" id="rememberState"><span class="track"></span><span class="thumb"></span></label>
+    </div>
+    <div class="row">
+      <div><div class="row-label">Show stats overlay</div><div class="row-desc">FPS · resolution · budget on the video</div></div>
+      <label class="toggle"><input type="checkbox" id="showStats"><span class="track"></span><span class="thumb"></span></label>
+    </div>
+    <div class="row">
+      <div><div class="row-label">Only in fullscreen</div><div class="row-desc">Run SR only while the video is fullscreen</div></div>
+      <label class="toggle"><input type="checkbox" id="onlyFullscreen"><span class="track"></span><span class="thumb"></span></label>
+    </div>
+    <div class="row">
+      <div><div class="row-label">Disable on this site</div><div class="row-desc" id="siteHost">—</div></div>
+      <label class="toggle"><input type="checkbox" id="blockSite"><span class="track"></span><span class="thumb"></span></label>
+    </div>
+  </div>
+
+  <div class="footer">
+    SPAN-Lite 2× · WebGPU · on-device<br>
+    Toggle on the video (SR button) or press <b>Alt+S</b><br>
+    <a href="#" id="benchLink">Run speed benchmark ›</a>
+  </div>
+
+<script src="popup.js"></script>
+</body>
+</html>

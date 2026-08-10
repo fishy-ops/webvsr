@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebVSR — engine speed benchmark</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 32px; background: #0e0f13; color: #d7dae0;
+    font: 15px/1.6 "Segoe UI", system-ui, sans-serif; }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .sub { color: #7c8290; margin: 0 0 24px; font-size: 13px; max-width: 640px; }
+  #backend { font-family: "Cascadia Code", Consolas, monospace; }
+  .ok { color: #5fd97a; } .bad { color: #e0655f; }
+  button { background: #1c9fc4; color: #fff; border: 0; border-radius: 6px;
+    padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { background: #333842; color: #777; cursor: default; }
+  table { border-collapse: collapse; margin-top: 20px; width: 100%; max-width: 620px; }
+  th, td { text-align: right; padding: 7px 14px; border-bottom: 1px solid #23262e; font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: #8b91a0; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  td.fps-good { color: #5fd97a; } td.fps-mid { color: #e0a24a; } td.fps-bad { color: #e0655f; }
+  #log { margin-top: 18px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; color: #6f7684; white-space: pre-wrap; }
+  .note { margin-top: 24px; max-width: 640px; color: #8b91a0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>WebVSR — SPAN-Lite 2× engine benchmark</h1>
+  <p class="sub">Runs the real in-page WebGPU pipeline (the exact code the extension uses)
+  on a synthetic frame at each resolution. This is the true end-to-end GPU cost —
+  preprocess, 16 convolutions, PixelShuffle, and the copy to canvas.</p>
+
+  <p>Backend: <span id="backend">not started</span></p>
+  <button id="run">Run benchmark</button>
+
+  <table id="results" hidden>
+    <thead><tr><th>Input</th><th>Output</th><th>ms / frame</th><th>FPS</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div id="log"></div>
+
+  <p class="note">Input is capped at 720p in the extension (→ 1440p out), because 2× above
+  that can't stay real-time on this GPU class. Green ≥ 30fps, amber ≥ 15fps, red below.</p>
+
+<script src="webgpu-sr.js?v=final"></script>
+<script>
+const logEl = document.getElementById('log');
+const backendEl = document.getElementById('backend');
+const table = document.getElementById('results');
+const tbody = table.querySelector('tbody');
+const runBtn = document.getElementById('run');
+const log = (m) => { logEl.textContent += m + '\n'; };
+
+const HEIGHTS = [144, 240, 360, 480, 540, 720];
+const WARMUP = 5, ITERS = 30;
+
+function makeFrame(w, h) {
+  // A textured synthetic frame (gradient + noise) as a VideoFrame source.
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    img.data[i*4]   = (i % w) * 255 / w;
+    img.data[i*4+1] = ((i / w) | 0) * 255 / h;
+    img.data[i*4+2] = (Math.random() * 255) | 0;
+    img.data[i*4+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return new VideoFrame(c, { timestamp: 0 });
+}
+
+async function main() {
+  runBtn.disabled = true;
+  const e = new WebGPUSR();
+  const ok = await e.init();
+  if (!ok) {
+    backendEl.textContent = 'WebGPU unavailable'; backendEl.className = 'bad';
+    runBtn.disabled = false; return;
+  }
+  backendEl.textContent = 'WebGPU ✓'; backendEl.className = 'ok';
+  await e.loadWeights('models/span_lite_2x.bin');
+  table.hidden = false;
+
+  const canvas = document.createElement('canvas');
+
+  for (const h of HEIGHTS) {
+    const w = Math.round(h * 16 / 9) & ~1;
+    const frame = makeFrame(w, h);
+    e.configure(canvas, w, h);
+
+    for (let i = 0; i < WARMUP; i++) { e.render(frame); }
+    await e.waitIdle();
+
+    const t0 = performance.now();
+    for (let i = 0; i < ITERS; i++) { e.render(frame); }
+    await e.waitIdle();
+    const ms = (performance.now() - t0) / ITERS;
+    frame.close();
+
+    const fps = 1000 / ms;
+    const cls = fps >= 30 ? 'fps-good' : fps >= 15 ? 'fps-mid' : 'fps-bad';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${w}×${h}</td><td>${w*2}×${h*2}</td>` +
+      `<td>${ms.toFixed(1)}</td><td class="${cls}">${fps.toFixed(1)}</td>`;
+    tbody.appendChild(tr);
+    log(`${w}×${h} → ${w*2}×${h*2}: ${ms.toFixed(1)} ms  (${fps.toFixed(1)} fps)`);
+    await new Promise(r => setTimeout(r, 30));
+  }
+  log('\nDone.');
+  runBtn.disabled = false;
+}
+runBtn.addEventListener('click', () => { main().catch(err => { log('ERROR: ' + err.message); console.error(err); }); });
+</script>
+</body>
+</html>

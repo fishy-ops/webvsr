@@ -1,0 +1,25 @@
+# Training data (large, third-party licensed — not redistributed)
+data/
+# Training checkpoints (large .pth); shipped models live in extension/models/*.bin
+checkpoints/
+checkpoints_c16/
+*.pth
+# Unused ONNX Runtime WASM build (~35MB) — engine is pure WebGPU now
+extension/lib/
+# Old exports / caches / scratch
+onnx/
+__pycache__/
+*.pyc
+comparisons/
+comparisons_zoomed/
+*.tgz
+training_log.json
+# Python virtualenv / node
+.venv/
+venv/
+node_modules/
+# OS/editor
+.DS_Store
+Thumbs.db
+
+*.log

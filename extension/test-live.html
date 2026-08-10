@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebVSR — live pipeline test</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; padding:20px; background:#0e0f13; color:#d7dae0; font:14px system-ui,sans-serif; }
+  #stats { font-family:Consolas,monospace; white-space:pre; background:#15171d; padding:10px 14px; border-radius:6px; margin-bottom:12px; }
+  .row { display:flex; gap:16px; align-items:flex-start; }
+  canvas { border:1px solid #262a33; }
+  .lbl { font-size:12px; color:#8b91a0; margin:4px 0; }
+</style>
+</head>
+<body>
+  <div id="stats">starting…</div>
+  <div class="row">
+    <div><div class="lbl">SOURCE (live video, 360p, animated)</div><video id="vid" muted playsinline style="width:426px;border:1px solid #262a33"></video></div>
+    <div><div class="lbl">WebVSR OUTPUT (governed neural → 720p finish)</div><canvas id="out" style="width:640px"></canvas></div>
+  </div>
+
+<script src="webgpu-sr.js?v=coarse1"></script>
+<script>
+// ── Governor params copied verbatim from content.js ──
+const DISPLAY_CAP=1440, NEURAL_CAP=720, MIN_NEURAL=144, NEURAL_STEP=16, START_NEURAL=240;
+const statsEl=document.getElementById('stats');
+const vid=document.getElementById('vid');
+const out=document.getElementById('out');
+
+// Animated source canvas → MediaStream → video element (a real playing <video>)
+const SRCW=640, SRCH=360;
+const src=document.createElement('canvas'); src.width=SRCW; src.height=SRCH;
+const sg=src.getContext('2d');
+let t=0;
+function drawSource(){
+  t+=0.016;
+  const grd=sg.createLinearGradient(0,0,SRCW,SRCH);
+  grd.addColorStop(0,'#123'); grd.addColorStop(1,'#c24');
+  sg.fillStyle=grd; sg.fillRect(0,0,SRCW,SRCH);
+  // moving circle
+  sg.fillStyle='#4fd'; sg.beginPath();
+  sg.arc(SRCW/2+Math.cos(t)*160, SRCH/2+Math.sin(t*1.3)*90, 40,0,7); sg.fill();
+  // fine grid (high-freq detail to show SR/finish)
+  sg.strokeStyle='rgba(255,255,255,0.35)'; sg.lineWidth=1;
+  for(let i=0;i<SRCW;i+=12){ sg.beginPath(); sg.moveTo(i+((t*30)%12),0); sg.lineTo(i+((t*30)%12),SRCH); sg.stroke(); }
+  sg.fillStyle='#fff'; sg.font='bold 40px sans-serif'; sg.fillText('WebVSR '+Math.floor(t),40,320);
+  requestAnimationFrame(drawSource);
+}
+drawSource();
+
+async function main(){
+  const stream=src.captureStream(30);
+  vid.srcObject=stream;
+  await vid.play();
+  await new Promise(r=>{ if(vid.videoWidth) r(); else vid.onloadedmetadata=r; });
+
+  const e=new WebGPUSR();
+  if(!await e.init()){ statsEl.textContent='WebGPU init failed'; return; }
+  await e.loadWeights('models/span_lite_2x.bin');
+
+  // governor state
+  let srH=START_NEURAL, budgetMs=30;
+  let cfgInW=0,cfgInH=0,cfgDispW=0,cfgDispH=0, lastT=-1, times=[];
+  let processing=false, frames=0, started=performance.now();
+  window.__gov=()=>({srH:Math.round(srH), fps: frames*1000/(performance.now()-started)});
+
+  function frame(){
+    if(!processing && !vid.paused){
+      const vw=vid.videoWidth, vh=vid.videoHeight;
+      if(vw && vh && vid.currentTime!==lastT){
+        processing=true; lastT=vid.currentTime;
+        try{
+          let nH=Math.min(Math.round(srH/NEURAL_STEP)*NEURAL_STEP, vh, NEURAL_CAP);
+          nH=Math.max(MIN_NEURAL,nH)&~1;
+          let nW=Math.round(vw*nH/vh)&~1;
+          let dH=Math.min(720, vh*2, DISPLAY_CAP), dW=Math.round(dH*vw/vh);
+          if(nW!==cfgInW||nH!==cfgInH||dW!==cfgDispW||dH!==cfgDispH){
+            e.configure(out,nW,nH,dW,dH); cfgInW=nW;cfgInH=nH;cfgDispW=dW;cfgDispH=dH;
+          }
+          window.__last={nW,nH,dW,dH,vw,vh};
+          e.render(vid);
+        }catch(err){ statsEl.textContent='ERROR: '+err.message+'\n'+(err.stack||''); processing=false; return; }
+        e.device.queue.onSubmittedWorkDone().then(()=>{
+          const dt = e.gpuMs>0 ? e.gpuMs : 0; frames++;
+          times.push(dt); if(times.length>8) times.shift();
+          const s=[...times].sort((a,b)=>a-b); const med=s[s.length>>1]||dt;
+          const ratio=med/budgetMs;
+          if((ratio>1.05||ratio<0.9) && med>0){
+            const ceil=Math.min(window.__last.vh,NEURAL_CAP);
+            let target=srH*Math.sqrt(budgetMs/med);
+            target=Math.max(MIN_NEURAL,Math.min(ceil,target));
+            srH+=(target-srH)*0.5;
+          }
+          const L=window.__last;
+          statsEl.textContent=
+            `source ${L.vw}x${L.vh}  |  neural ${L.nW}x${L.nH} -> ${L.nW*2}x${L.nH*2}  |  display ${L.dW}x${L.dH}\n`+
+            `GPU ${dt.toFixed(1)}ms  median ${med.toFixed(1)}ms / budget ${budgetMs}ms  |  neural settled srH=${srH.toFixed(0)}`;
+          processing=false;
+        }).catch(()=>{ processing=false; });
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  frame();
+}
+main().catch(e=>{ statsEl.textContent='FATAL: '+e.message+'\n'+(e.stack||''); });
+</script>
+</body>
+</html>
