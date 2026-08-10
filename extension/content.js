@@ -22,7 +22,7 @@ const QUALITY_FRAC = { fast: 0.5, medium: 0.7, quality: 1.0 };
 let settings = {
   enabled: false, perfMode: 'balanced', quality: 'quality',
   targetScale: 2, autoPause: true, rememberState: true, showStats: true,
-  onlyFullscreen: false, blockedSites: [], sharpness: 0.35,
+  onlyFullscreen: false, blockedSites: [], sharpness: 0.35, autoEngage: true,
 };
 
 // Models: a fast 2× and a native 4×. Target scale >2 uses the 4× model for real
@@ -295,16 +295,34 @@ class VideoOverlay {
       (settings.autoPause && document.hidden) || this.comparing || this.gatedByFullscreen();
   }
 
+  // Auto-engage: SR only helps when the source is clearly below the on-screen
+  // size. If it's already ~screen resolution, skip it (no GPU spent for no gain).
+  autoSkip() {
+    if (!settings.autoEngage) return false;
+    const vh = this.video.videoHeight;
+    if (!vh) return false;
+    const rect = this.video.getBoundingClientRect();
+    const dispH = (rect.height || 0) * (window.devicePixelRatio || 1);
+    if (dispH <= 0) return false;
+    return vh >= dispH * 0.85;
+  }
+
   loop() {
     if (!this.active) return;
-    // Reveal the original video when gated, comparing, or SR can't keep up.
-    const hide = this.gatedByFullscreen() || this.comparing || this.cantKeepUp;
+    this.notWorthIt = this.autoSkip();
+    // Reveal the original when gated, comparing, can't-keep-up, or not worth it.
+    const hide = this.gatedByFullscreen() || this.comparing || this.cantKeepUp || this.notWorthIt;
     if (hide && this.outCanvas.style.display !== 'none') this.outCanvas.style.display = 'none';
     else if (!hide && this.outCanvas.style.display === 'none') this.outCanvas.style.display = '';
+    if (this.notWorthIt && settings.showStats) {
+      this.statsEl.innerHTML =
+        '<span style="color:#00c4e8;font-weight:700">WebVSR</span> <span style="color:#7c8f7c">idle</span>\n' +
+        'source already ≈ screen res —\nSR would not help (no GPU used)';
+    }
 
-    if (!this.processing && !this.paused() && this.video.currentTime !== this.lastMediaTime) {
+    if (!this.processing && !this.paused() && !this.notWorthIt
+        && this.video.currentTime !== this.lastMediaTime) {
       if (this.cantKeepUp) {
-        // Passing through the original; sample occasionally to detect recovery.
         const now = performance.now();
         if (now - this._lastProbe > 700) { this._lastProbe = now; this.processFrame(); }
       } else {

@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
   onlyFullscreen: false, // only run SR while the video is fullscreen
   blockedSites: [],      // hostnames where WebVSR stays off entirely
   sharpness: 0.35,       // contrast-adaptive sharpen strength (0..0.6); the "pop"
+  autoEngage: true,      // only run SR when the source is clearly lower-res than the display
 };
 
 let SETTINGS = { ...DEFAULT_SETTINGS };

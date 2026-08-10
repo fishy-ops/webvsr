@@ -34,6 +34,7 @@ function render() {
   document.getElementById('perfHint').textContent = PERF_HINT[settings.perfMode] || '';
   document.getElementById('qualHint').textContent = QUAL_HINT[settings.quality] || '';
   document.getElementById('scaleHint').innerHTML = scaleHint(settings.targetScale);
+  document.getElementById('autoEngage').checked = !!settings.autoEngage;
   document.getElementById('autoPause').checked = !!settings.autoPause;
   document.getElementById('rememberState').checked = !!settings.rememberState;
   document.getElementById('showStats').checked = !!settings.showStats;
@@ -58,6 +59,7 @@ document.querySelectorAll('#scale button').forEach((b) =>
   b.addEventListener('click', () => save({ targetScale: parseFloat(b.dataset.v) })));
 document.querySelectorAll('#sharp button').forEach((b) =>
   b.addEventListener('click', () => save({ sharpness: parseFloat(b.dataset.v) })));
+document.getElementById('autoEngage').addEventListener('change', (e) => save({ autoEngage: e.target.checked }));
 document.getElementById('autoPause').addEventListener('change', (e) => save({ autoPause: e.target.checked }));
 document.getElementById('rememberState').addEventListener('change', (e) => save({ rememberState: e.target.checked }));
 document.getElementById('showStats').addEventListener('change', (e) => save({ showStats: e.target.checked }));
