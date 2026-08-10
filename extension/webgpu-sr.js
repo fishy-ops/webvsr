@@ -94,7 +94,20 @@ class WebGPUSR {
     return true;
   }
 
+  // Load (or hot-swap) a model. Safe to call again to switch models: disposes
+  // the previous weights and rebuilds pipelines for the new channel/scale.
+  async switchModel(url) {
+    if (url === this._modelUrl) return this;
+    return this.loadWeights(url);
+  }
+
   async loadWeights(url) {
+    // Dispose any previous model's weight buffers and reset to defaults so the
+    // manifest fully determines channels/scale (clean hot-swap).
+    for (const k in this.w) { this.w[k].weight?.destroy?.(); this.w[k].bias?.destroy?.(); }
+    this.w = {};
+    this.C = 32; this.scale = 2;
+    this._modelUrl = url;
     // Optional sibling manifest (e.g. span_lite_2x.json) sets the channel count.
     try {
       const mUrl = url.replace(/\.bin(\?.*)?$/, '.json$1');
