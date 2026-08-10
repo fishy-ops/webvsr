@@ -25,6 +25,12 @@ let settings = {
   onlyFullscreen: false, blockedSites: [], sharpness: 0.35,
 };
 
+// Models: a fast 2× and a native 4×. Target scale >2 uses the 4× model for real
+// reconstruction; ≤2 uses the 2× model. (chrome.runtime is available here.)
+const MODEL_2X = chrome.runtime.getURL('models/span_lite_2x_c16.bin');
+const MODEL_4X = chrome.runtime.getURL('models/span_lite_4x_c16.bin');
+const modelForScale = (s) => (s > 2 ? MODEL_4X : MODEL_2X);
+
 // ── Shared engine (one GPU device for the page) ───────────────────
 let engine = null, enginePromise = null, engineError = null, activeOverlay = null;
 
@@ -37,9 +43,8 @@ async function getEngine() {
       if (!navigator.gpu) throw new Error('navigator.gpu missing (WebGPU disabled)');
       const e = new WebGPUSR();
       if (!await e.init()) throw new Error('no WebGPU adapter/device');
-      // 16-channel model: ~4× faster than 32ch (720p→1440p ~22ms = real-time on a
-      // 2070S) at ~32.0 dB vs 32.3 dB — near-identical quality. See OPTIMIZATION_LOG.
-      await e.loadWeights(chrome.runtime.getURL('models/span_lite_2x_c16.bin'));
+      // Start on the fast 2× model; switched to 4× on demand by target scale.
+      await e.loadWeights(MODEL_2X);
       engine = e;
       console.log('[WebVSR] Engine ready');
       return e;
@@ -312,6 +317,23 @@ class VideoOverlay {
   processFrame() {
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if (!vw || !vh) return;
+
+    // Load the model that matches the target scale (2× vs native 4×). Swap is
+    // async; skip frames while it happens, and fall back to 2× if 4× is missing.
+    const want = modelForScale(settings.targetScale || 2);
+    if (engine._modelUrl !== want && !this._switching) {
+      this._switching = true;
+      engine.switchModel(want)
+        .then(() => { this.cfgInW = 0; this._switching = false; })
+        .catch(() => {
+          if (want !== MODEL_2X) {
+            engine.switchModel(MODEL_2X).then(() => { this.cfgInW = 0; this._switching = false; })
+              .catch(() => { this._switching = false; });
+          } else { this._switching = false; }
+        });
+    }
+    if (this._switching) return;
+
     this.processing = true;
     this.lastMediaTime = this.video.currentTime;
     const t0 = performance.now();
