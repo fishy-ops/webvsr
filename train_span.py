@@ -134,6 +134,7 @@ def train():
     parser.add_argument("--phase2", action="store_true",
                         help="Start phase 2 from best phase 1 checkpoint")
     parser.add_argument("--channels", type=int, default=CONFIG["feature_channels"])
+    parser.add_argument("--scale", type=int, default=CONFIG["scale"])
     parser.add_argument("--ckpt-dir", default=CONFIG["checkpoint_dir"])
     parser.add_argument("--total-epochs", type=int, default=CONFIG["total_epochs"])
     parser.add_argument("--phase1-epochs", type=int, default=CONFIG["phase1_epochs"])
@@ -141,6 +142,7 @@ def train():
 
     cfg = dict(CONFIG)  # copy so per-run overrides don't mutate the shared config
     cfg["feature_channels"] = args.channels
+    cfg["scale"] = args.scale
     cfg["checkpoint_dir"] = args.ckpt_dir
     cfg["total_epochs"] = args.total_epochs
     cfg["phase1_epochs"] = args.phase1_epochs

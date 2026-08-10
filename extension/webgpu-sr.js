@@ -23,7 +23,7 @@ const USE_F16 = false;
 
 // Weight tensors in export order (matches export_webgpu_weights.py), for a
 // SPAN-Lite with C feature channels. [name, outC, inC, k]
-function weightSpec(C) {
+function weightSpec(C, scale) {
   return [
     ['conv_first', C, 3, 3],
     ['b1c1', C, C, 3], ['b1c2', C, C, 3], ['b1c3', C, C, 3],
@@ -32,7 +32,7 @@ function weightSpec(C) {
     ['b4c1', C, C, 3], ['b4c2', C, C, 3], ['b4c3', C, C, 3],
     ['conv_cat', C, 4 * C, 1],
     ['conv_last', C, C, 3],
-    ['upsampler', 12, C, 3],
+    ['upsampler', 3 * scale * scale, C, 3],   // PixelShuffle(scale): 3·scale² channels
   ];
 }
 
@@ -50,6 +50,7 @@ class WebGPUSR {
     this.sampler = null;
     this.outTex = null;
     this.C = 32;        // feature channels (from the model manifest; 32 by default)
+    this.scale = 2;     // upscale factor (from the model manifest; 2 by default)
     this.sharpen = 0;   // 0..1 contrast-adaptive sharpen strength (0 = off)
   }
 
@@ -98,8 +99,12 @@ class WebGPUSR {
     try {
       const mUrl = url.replace(/\.bin(\?.*)?$/, '.json$1');
       const mResp = await fetch(mUrl);
-      if (mResp.ok) { const m = await mResp.json(); if (m.channels) this.C = m.channels | 0; }
-    } catch (_) { /* no manifest → keep default 32 */ }
+      if (mResp.ok) {
+        const m = await mResp.json();
+        if (m.channels) this.C = m.channels | 0;
+        if (m.scale) this.scale = m.scale | 0;
+      }
+    } catch (_) { /* no manifest → keep defaults (32ch, 2×) */ }
     this._buildPipelines();
 
     const buffer = await (await fetch(url)).arrayBuffer();
@@ -108,7 +113,7 @@ class WebGPUSR {
     // In f16 mode, convert each tensor to half-float bytes before upload.
     const toBytes = (sub) => this.f16 ? f32ArrayToF16(sub) : sub;
     let off = 0;
-    for (const [name, outC, inC, k] of weightSpec(this.C)) {
+    for (const [name, outC, inC, k] of weightSpec(this.C, this.scale)) {
       const wLen = outC * inC * k * k;
       const bLen = outC;
       const wBuf = this.device.createBuffer({
@@ -156,7 +161,7 @@ class WebGPUSR {
     inW &= ~1; inH &= ~1;
     this.inW = inW; this.inH = inH;
     const px = inW * inH;
-    const outW = inW * 2, outH = inH * 2;
+    const outW = inW * this.scale, outH = inH * this.scale;
     dispW = Math.max(2, Math.round(dispW || outW));
     dispH = Math.max(2, Math.round(dispH || outH));
     this.dispW = dispW; this.dispH = dispH;
@@ -172,7 +177,7 @@ class WebGPUSR {
     for (const name of ['x3', 'f0', 'mid1', 'mid3', 'bb4', 'sA', 'sB', 'sC', 'catout']) {
       this.buf[name] = feat(name === 'x3' ? 3 : this.C);
     }
-    this.buf.up = feat(12);
+    this.buf.up = feat(3 * this.scale * this.scale);
 
     const TEX = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING;
     this.outTex = d.createTexture({ size: [outW, outH], format: 'rgba8unorm', usage: TEX });
@@ -266,7 +271,7 @@ class WebGPUSR {
       // tail
       ['conv', conv(B.sC, 'conv_last', B.bb4, C, C, 3, 0), C],
       ['cat', this._catBG(), C],
-      ['conv', conv(B.catout, 'upsampler', B.up, C, 12, 3, 0), 12],
+      ['conv', conv(B.catout, 'upsampler', B.up, C, 3 * this.scale * this.scale, 3, 0), 3 * this.scale * this.scale],
     ];
 
     // PixelShuffle -> neural output texture
@@ -275,7 +280,7 @@ class WebGPUSR {
       entries: [
         { binding: 0, resource: { buffer: B.up } },
         { binding: 1, resource: this.outTex.createView() },
-        { binding: 2, resource: { buffer: this._u([inW, inH, 2, 3]) } },
+        { binding: 2, resource: { buffer: this._u([inW, inH, this.scale, 3]) } },
       ],
     });
 
@@ -286,7 +291,7 @@ class WebGPUSR {
         entries: [
           { binding: 0, resource: this.outTex.createView() },
           { binding: 1, resource: this.dispTex.createView() },
-          { binding: 2, resource: { buffer: this._u([inW * 2, inH * 2, this.dispW, this.dispH]) } },
+          { binding: 2, resource: { buffer: this._u([inW * this.scale, inH * this.scale, this.dispW, this.dispH]) } },
         ],
       });
     }
@@ -362,7 +367,7 @@ class WebGPUSR {
     // PixelShuffle at neural output resolution.
     pass.setPipeline(this.pipe.shuffle);
     pass.setBindGroup(0, this.shuffleBG);
-    pass.dispatchWorkgroups(Math.ceil(inW * 2 / 16), Math.ceil(inH * 2 / 16), 1);
+    pass.dispatchWorkgroups(Math.ceil(inW * this.scale / 16), Math.ceil(inH * this.scale / 16), 1);
     pass.end();
 
     if (this.needFinish) {
@@ -390,7 +395,9 @@ class WebGPUSR {
       enc.copyTextureToTexture({ texture: this.sharpTex }, { texture: canvasTex }, [this.dispW, this.dispH, 1]);
     } else {
       const srcTex = this.needFinish ? this.dispTex : this.outTex;
-      enc.copyTextureToTexture({ texture: srcTex }, { texture: canvasTex }, [this.dispW, this.dispH, 1]);
+      const cw = this.needFinish ? this.dispW : inW * this.scale;
+      const ch = this.needFinish ? this.dispH : inH * this.scale;
+      enc.copyTextureToTexture({ texture: srcTex }, { texture: canvasTex }, [cw, ch, 1]);
     }
 
     // Resolve GPU timestamps and read back asynchronously (never blocks render).

@@ -25,8 +25,8 @@ import numpy as np
 from model_span import SPANLite
 
 
-def export_weights(checkpoint_path, output_path, channels=32):
-    model = SPANLite(num_in_ch=3, num_out_ch=3, feature_channels=channels, upscale=2)
+def export_weights(checkpoint_path, output_path, channels=32, scale=2):
+    model = SPANLite(num_in_ch=3, num_out_ch=3, feature_channels=channels, upscale=scale)
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state = ckpt.get('model', ckpt.get('model_state_dict', ckpt))
     model.load_state_dict(state)
@@ -79,7 +79,7 @@ def export_weights(checkpoint_path, output_path, channels=32):
     import json as _json
     manifest_path = output_path.rsplit('.', 1)[0] + '.json'
     with open(manifest_path, 'w') as f:
-        _json.dump({"channels": channels, "scale": 2, "blocks": 4}, f)
+        _json.dump({"channels": channels, "scale": scale, "blocks": 4}, f)
     print(f"Wrote manifest {manifest_path}: channels={channels}")
 
     print(f"Exported {total_params:,} parameters ({total_params * 4 / 1024:.0f} KB)")
@@ -98,8 +98,9 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default='D:/webvsr/checkpoints/best_phase2.pth')
     parser.add_argument('--output', default='D:/webvsr/extension/models/span_lite_2x.bin')
     parser.add_argument('--channels', type=int, default=32)
+    parser.add_argument('--scale', type=int, default=2)
     args = parser.parse_args()
 
     import os
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    export_weights(args.checkpoint, args.output, args.channels)
+    export_weights(args.checkpoint, args.output, args.channels, args.scale)
