@@ -24,6 +24,19 @@ way.
 - **On-device & private.** Everything runs locally in the page.
 - Runs on any site / any `<video>` (all frames).
 
+## Results
+
+On realistically **compressed** low-res input (what real web video looks like),
+WebVSR removes blocking/noise that bicubic just enlarges — reconstruction, not
+fabrication:
+
+![Bicubic vs WebVSR vs Ground Truth on compressed input](results/compare_fair.png)
+
+*Left: bicubic. Middle: WebVSR. Right: ground truth.* On already-sharp/clean
+sources the gain is small (a good bicubic is hard to beat there) — which is
+exactly why **Auto-engage** only spends GPU when the source is genuinely
+low-res.
+
 ## How it works
 
 `content.js` detects videos and drives `webgpu-sr.js`, which implements the SR
