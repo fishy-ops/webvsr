@@ -81,5 +81,11 @@ Steady state 63 s/epoch (epoch 0's 190s was dataset warmup). Loss 0.347→0.023 
 
 **Also delivered:** channel-aware engine, full settings system (GPU-load / quality / target-scale / toggles), on-video ⚙ flyout + hold-to-compare + Alt+S, auto-pause, remember-state, only-fullscreen, per-site disable.
 
-**Not done (deferred, documented):** draggable button + split-screen slider (untestable without sideloading); a true 32ch "Ultra" tier via engine model-switching (16ch ≈ 32ch quality, so low value).
+**Not done (deferred, documented):** draggable button + split-screen slider (untestable without sideloading).
+
+## 4× support (2026-08-10)
+- Engine made **scale-aware** (upscale read from manifest; upsampler=3·scale², output sizing, shuffle all derived) and **hot-swappable** (switchModel disposes old weights, reloads). 2× path re-verified intact; 4× shapes verified.
+- Assessed user's mamba-sr models (ESRGAN 22M/GAN, RCAN 5M, ResNetSR 1.5M, VSRNet 29.6M) → all too heavy for real-time; trained a **16ch 4× SPAN-Lite** instead (26.16 dB; 4× is inherently harder). **Real-time: 360p→1440p 5.8ms (171fps GPU), 480p→1920p 10ms** — conv body runs at input res so 4× ≈ 2× cost at same input.
+- Wired: content.js picks model by target scale (>2 → 4× model, ≤2 → 2×), async hot-swap + fallback. Popup offers 1.5–4×.
+- Quality: cleaner than bicubic (deblocks), no fabrication, but soft vs GT. HUGE headroom (171fps) → **training a 32ch 4×** (task 10) for much sharper output, still real-time (~23ms est at 360p). Minor: ~6px edge-darkening at 4× (zero-padding artifact) — could fix with reflect padding.
 
