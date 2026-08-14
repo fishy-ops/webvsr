@@ -71,11 +71,6 @@ document.getElementById('blockSite').addEventListener('change', (e) => {
   save({ blockedSites: list });
 });
 
-document.getElementById('benchLink').addEventListener('click', (e) => {
-  e.preventDefault();
-  chrome.tabs.create({ url: chrome.runtime.getURL('bench.html') });
-});
-
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   try { activeHost = tabs[0] && tabs[0].url ? new URL(tabs[0].url).hostname : ''; }
   catch (_) { activeHost = ''; }
