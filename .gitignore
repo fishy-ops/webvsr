@@ -8,6 +8,8 @@ checkpoints_c16/
 extension/lib/
 # Old exports / caches / scratch
 onnx/
+# Internal handoff / context-transfer notes (kept locally, not for the public repo)
+HANDOFF.md
 __pycache__/
 *.pyc
 comparisons/
