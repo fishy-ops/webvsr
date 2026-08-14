@@ -9,7 +9,7 @@
 const V = new URLSearchParams(location.search).get('v') || '0';
 window.__ready = new Promise((res, rej) => {
   const s = document.createElement('script');
-  s.src = 'webgpu-sr.js?v=' + V;
+  s.src = '../extension/webgpu-sr.js?v=' + V;
   s.onload = () => res(true); s.onerror = rej;
   document.head.appendChild(s);
 });

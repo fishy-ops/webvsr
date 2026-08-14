@@ -48,10 +48,10 @@ video → importExternalTexture → conv_first → 4× SPAB blocks → concat �
 ```
 
 The model (SPAN-Lite, reparameterized to plain 3×3 convs at inference) is trained
-in PyTorch (`train_span.py`) on a Real-ESRGAN-style degradation pipeline
-(`dataset.py`) so it learns to undo real compression, then exported to a flat
-binary + JSON manifest (`export_webgpu_weights.py`) that the engine loads into
-GPU buffers.
+in PyTorch (`training/train_span.py`) on a Real-ESRGAN-style degradation pipeline
+(`training/dataset.py`) so it learns to undo real compression, then exported to a
+flat binary + JSON manifest (`training/export_webgpu_weights.py`) that the engine
+loads into GPU buffers.
 
 ## Install (unpacked)
 
@@ -64,11 +64,15 @@ GPU buffers.
 ## Repo layout
 
 - `extension/` — the Chrome extension (engine, content script, popup, models).
-- `model_span.py` — SPAN-Lite architecture.
-- `train_span.py`, `dataset.py`, `losses.py` — training.
-- `export_webgpu_weights.py` — export a checkpoint to the engine's weight format.
-- `evaluate.py`, `make_compare_*.py` — evaluation / visual comparisons.
-- `OPTIMIZATION_LOG.md` — the full record of how the real-time kernel was built.
+  This is what you load unpacked / package for the Web Store.
+- `training/` — the ML side: SPAN-Lite architecture (`model_span.py`), training
+  (`train_span.py`, `dataset.py`, `losses.py`), weight export
+  (`export_webgpu_weights.py`), evaluation and visual comparisons
+  (`evaluate.py`, `make_compare_*.py`), and `OPTIMIZATION_LOG.md` — the full
+  record of how the real-time kernel was built.
+- `dev/` — browser benchmarking harnesses (`perf.html`, `bench.html`,
+  `test-live.html`) for profiling the engine outside the extension.
+- `results/` — the comparison images shown in this README.
 
 ## Status
 
