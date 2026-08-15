@@ -17,6 +17,7 @@
     --shadow:     rgba(45,55,80,0.14);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: transparent; }   /* let the rounded body corners show through */
 
   body {
     width: 328px;
@@ -26,12 +27,13 @@
     background: #eef1f5;
     position: relative;
     overflow: hidden;
+    border-radius: 14px;
     -webkit-font-smoothing: antialiased;
   }
 
   /* Soft neutral light-field the frosted glass refracts (greys only — no colour cast). */
   body::before {
-    content: ""; position: fixed; inset: -30%;
+    content: ""; position: absolute; inset: -30%;
     background:
       radial-gradient(40% 40% at 15% 10%, rgba(255,255,255,0.95), transparent 70%),
       radial-gradient(46% 46% at 88% 16%, rgba(216,221,229,0.85), transparent 72%),
@@ -42,7 +44,7 @@
     z-index: -2;
   }
   body::after {
-    content: ""; position: fixed; inset: 0;
+    content: ""; position: absolute; inset: 0;
     background: linear-gradient(180deg, rgba(255,255,255,0.14), rgba(223,228,236,0.06));
     z-index: -1;
   }
