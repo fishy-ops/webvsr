@@ -17,22 +17,28 @@
     --shadow:     rgba(45,55,80,0.14);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { background: transparent; }   /* let the rounded body corners show through */
+  html, body { background: transparent; }
 
   body {
     width: 328px;
     font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
     font-size: 13px;
     color: var(--text);
-    background: #eef1f5;
-    position: relative;
-    overflow: hidden;
-    border-radius: 14px;
     -webkit-font-smoothing: antialiased;
   }
 
+  /* Rounded content surface — Chrome draws the popup window frame itself, so the
+     rounding/clipping lives on this wrapper (not body, which Chrome auto-sizes). */
+  .app {
+    position: relative;
+    overflow: hidden;
+    border-radius: 14px;
+    background: #eef1f5;
+  }
+  .app > * { position: relative; z-index: 1; }
+
   /* Soft neutral light-field the frosted glass refracts (greys only — no colour cast). */
-  body::before {
+  .app::before {
     content: ""; position: absolute; inset: -30%;
     background:
       radial-gradient(40% 40% at 15% 10%, rgba(255,255,255,0.95), transparent 70%),
@@ -41,12 +47,12 @@
       radial-gradient(46% 46% at 6% 90%,  rgba(224,229,237,0.85), transparent 72%),
       linear-gradient(160deg, #f6f8fb, #e6eaf1);
     filter: blur(22px) saturate(102%);
-    z-index: -2;
+    z-index: 0;
   }
-  body::after {
+  .app::after {
     content: ""; position: absolute; inset: 0;
     background: linear-gradient(180deg, rgba(255,255,255,0.14), rgba(223,228,236,0.06));
-    z-index: -1;
+    z-index: 0;
   }
 
   /* ── Header ─────────────────────────────────────────── */
@@ -175,6 +181,7 @@
 </style>
 </head>
 <body>
+ <div class="app">
   <div class="header">
     <img class="logo" src="icons/icon48.png" alt="WebVSR logo">
     <div>
@@ -265,6 +272,7 @@
     SPAN-Lite 2× · WebGPU · on-device<br>
     Toggle on the video (SR button) or press <b>Alt+S</b>
   </div>
+ </div>
 
 <script src="popup.js"></script>
 </body>
