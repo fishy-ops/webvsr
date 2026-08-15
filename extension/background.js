@@ -18,8 +18,10 @@ const DEFAULT_SETTINGS = {
   showStats: true,       // show the on-video stats HUD
   onlyFullscreen: false, // only run SR while the video is fullscreen
   blockedSites: [],      // hostnames where WebVSR stays off entirely
-  sharpness: 0.35,       // contrast-adaptive sharpen strength (0..0.6); the "pop"
+  sharpness: 0.9,        // contrast-adaptive sharpen strength (0=off … 1.4=high, or custom)
+  sharpnessCustom: false,// true = user is on the custom slider (sharpness can exceed High)
   autoEngage: true,      // only run SR when the source is clearly lower-res than the display
+  showCompare: false,    // show the on-video hold-to-compare button (opt-in)
 };
 
 let SETTINGS = { ...DEFAULT_SETTINGS };
