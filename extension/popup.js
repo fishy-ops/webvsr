@@ -49,7 +49,8 @@ function moveSliders() {
 }
 function scaleHint(s) {
   s = parseFloat(s);
-  if (s > 2) return '<span class="warn">⚠ Above 2× the model adds no new detail (it reconstructs up to 2×) — it just interpolates, and costs more GPU.</span>';
+  if (s >= 4) return 'Native 4×: a dedicated 4× reconstruction model (not an upscale of the 2×). Highest GPU cost.';
+  if (s > 2) return '<span class="warn">⚠ 3× runs the 4× model resampled down — 4× (native) is sharper for the same GPU cost.</span>';
   if (s === 2) return 'Recommended: matches the model\'s true 2× reconstruction.';
   return 'Below 2×: lighter, slightly softer than the model\'s full output.';
 }
