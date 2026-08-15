@@ -1,72 +1,54 @@
-"""Generate extension icons for WebVSR."""
-from PIL import Image, ImageDraw, ImageFont
+"""Generate extension icons for WebVSR.
+
+Mark: two arrows pointing outward (diagonal "expand" / upscale) in white on a
+cyan rounded square. Supersampled + LANCZOS-downsampled for clean anti-aliasing.
+"""
+from PIL import Image, ImageDraw
 import os
 
 ICON_DIR = r"D:\webvsr\extension\icons"
 os.makedirs(ICON_DIR, exist_ok=True)
 
 SIZES = [16, 48, 128]
+BG = (0, 165, 200, 255)   # brand cyan
+FG = (255, 255, 255, 255)
 
-BG_COLOR = (0, 165, 200)
-ACCENT = (255, 255, 255)
+# Line segments in a 24-unit viewBox: top-right arrow + bottom-left arrow, each a
+# corner bracket plus a diagonal shaft toward the centre (arrows pointing out).
+SEGMENTS = [
+    [(15, 3), (21, 3)], [(21, 3), (21, 9)], [(21, 3), (14, 10)],   # top-right
+    [(9, 21), (3, 21)], [(3, 21), (3, 15)], [(3, 21), (10, 14)],   # bottom-left
+]
+VERTS = [(15, 3), (21, 3), (21, 9), (14, 10), (9, 21), (3, 21), (3, 15), (10, 14)]
 
-for size in SIZES:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
 
-    margin = max(1, size // 16)
-    r = max(2, size // 6)
-    draw.rounded_rectangle(
-        [margin, margin, size - margin - 1, size - margin - 1],
-        radius=r,
-        fill=BG_COLOR,
-    )
+def draw_icon(size):
+    ss = 4                      # supersample factor
+    S = size * ss
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
 
-    cx, cy = size // 2, size // 2
+    margin = max(1, S // 16)
+    radius = max(2, S // 5)
+    d.rounded_rectangle([margin, margin, S - margin - 1, S - margin - 1],
+                        radius=radius, fill=BG)
 
-    if size >= 48:
-        # Draw a stylized upward arrow / upscale symbol
-        arrow_h = int(size * 0.4)
-        arrow_w = int(size * 0.28)
-        shaft_w = max(2, int(size * 0.1))
+    m = S * 0.16
+    sc = (S - 2 * m) / 24.0
+    def P(pt): return (m + pt[0] * sc, m + pt[1] * sc)
 
-        # Arrow shaft
-        draw.rectangle(
-            [cx - shaft_w // 2, cy - arrow_h // 2 + arrow_w // 2,
-             cx + shaft_w // 2, cy + arrow_h // 2],
-            fill=ACCENT,
-        )
-        # Arrow head
-        draw.polygon(
-            [
-                (cx, cy - arrow_h // 2),
-                (cx - arrow_w // 2, cy - arrow_h // 2 + arrow_w // 2),
-                (cx + arrow_w // 2, cy - arrow_h // 2 + arrow_w // 2),
-            ],
-            fill=ACCENT,
-        )
+    w = max(2, int(2.6 * sc))   # stroke width
+    for a, b in SEGMENTS:
+        d.line([P(a), P(b)], fill=FG, width=w)
+    r = w / 2.0                 # round caps/joints
+    for v in VERTS:
+        x, y = P(v)
+        d.ellipse([x - r, y - r, x + r, y + r], fill=FG)
 
-        # Small "2x" text at bottom
-        font_size = max(8, size // 8)
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except OSError:
-            font = ImageFont.load_default()
-        bbox = draw.textbbox((0, 0), "2x", font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(
-            (cx - tw // 2, cy + arrow_h // 2 - th + 2),
-            "2x",
-            fill=ACCENT,
-            font=font,
-        )
-    else:
-        # 16px: simple up-arrow
-        draw.polygon(
-            [(cx, 3), (cx - 4, 8), (cx + 4, 8)],
-            fill=ACCENT,
-        )
-        draw.rectangle([cx - 1, 7, cx + 1, 12], fill=ACCENT)
-
+    img = img.resize((size, size), Image.LANCZOS)
     img.save(os.path.join(ICON_DIR, f"icon{size}.png"))
     print(f"Saved icon{size}.png")
+
+
+for s in SIZES:
+    draw_icon(s)

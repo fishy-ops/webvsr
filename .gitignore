@@ -4,8 +4,6 @@ data/
 checkpoints/
 checkpoints_c16/
 *.pth
-# Unused ONNX Runtime WASM build (~35MB) — engine is pure WebGPU now
-extension/lib/
 # Old exports / caches / scratch
 onnx/
 # Internal handoff / context-transfer notes (kept locally, not for the public repo)
