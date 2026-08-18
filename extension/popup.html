@@ -179,6 +179,9 @@
     text-align: center; line-height: 1.7;
   }
   .footer b { color: var(--text-dim); font-weight: 600; }
+  .footer a { color: var(--text-dim); text-decoration: none; border-bottom: 1px solid rgba(120,132,155,0.45); transition: color .15s ease; }
+  .footer a:hover { color: var(--text); border-bottom-color: rgba(120,132,155,0.7); }
+  .footer .gh { display: inline-block; margin-top: 9px; }
 </style>
 </head>
 <body>
@@ -187,7 +190,7 @@
     <img class="logo" src="icons/icon48.png" alt="WebVSR logo">
     <div>
       <div class="title">Web<span>VSR</span></div>
-      <div class="sub">Real-time video super-resolution</div>
+      <div class="sub">Makes low-quality video clearer</div>
     </div>
   </div>
 
@@ -270,8 +273,9 @@
   </div>
 
   <div class="footer">
-    SPAN-Lite 2× · WebGPU · on-device<br>
-    Toggle on the video (SR button) or press <b>Alt+S</b>
+    Runs on your computer · Private · Free<br>
+    Turn it on with the button on any video, or press <b>Alt+S</b>
+    <a class="gh" href="https://github.com/fishy-ops/webvsr" target="_blank" rel="noopener">View source on GitHub ↗</a>
   </div>
  </div>
 

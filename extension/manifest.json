@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "WebVSR",
+  "name": "Video Upscaler & Enhancer",
   "version": "1.0.0",
-  "description": "Real-time video super-resolution in the browser via WebGPU",
+  "description": "Make blurry, low-quality video look clearer and sharper, right in your browser. Runs on your computer — free and private.",
   "permissions": [
     "activeTab",
     "storage"
