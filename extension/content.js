@@ -110,7 +110,7 @@ class VideoOverlay {
   }
 
   buildUI() {
-    // Layer 1: output canvas — low z so site controls stay on top.
+    // Layer 1: output canvas, low z so site controls stay on top.
     this.canvasLayer = el('div', {
       position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '10', overflow: 'hidden',
     });
@@ -120,7 +120,7 @@ class VideoOverlay {
     });
     this.canvasLayer.appendChild(this.outCanvas);
 
-    // Layer 2: UI — above site controls.
+    // Layer 2: UI, above site controls.
     this.uiLayer = el('div', {
       position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '2147483647',
     });
@@ -415,7 +415,7 @@ class VideoOverlay {
     if (this.notWorthIt && settings.showStats) {
       this.statsEl.innerHTML =
         '<span style="color:#2b3242;font-weight:700">WebVSR</span> <span style="color:#7a8494">idle</span>\n' +
-        'source already ≈ screen res —\nSR would not help (no GPU used)';
+        'already about as sharp as\nyour screen, nothing to fix here';
     }
 
     if (!this.processing && !this.paused() && !this.notWorthIt
@@ -499,7 +499,7 @@ class VideoOverlay {
       const wallMs = performance.now() - t0;
       this.lastMs = wallMs;
       this.lastGpuMs = engine.gpuMs || wallMs;
-      this._needsFirstFrame = false;   // a valid frame is now on the canvas — safe to show
+      this._needsFirstFrame = false;   // a valid frame is now on the canvas, safe to show
       this.adjust(wallMs);
       if (settings.showStats) this.refreshStats();
       this.processing = false;
@@ -542,7 +542,7 @@ class VideoOverlay {
       this.statsEl.innerHTML =
         '<span style="color:#2b3242;font-weight:700">WebVSR</span> ' +
         '<span style="color:#c07d2a">passthrough</span>\n' +
-        'source too fast for SR here —\nshowing original (no slowdown)';
+        'too much to keep up with here,\nshowing the original instead';
       return;
     }
     const avg = this.frameTimes.length

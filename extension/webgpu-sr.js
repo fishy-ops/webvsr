@@ -1,11 +1,11 @@
 /**
- * WebVSR — in-page WebGPU super-resolution engine.
+ * WebVSR - in-page WebGPU super-resolution engine.
  *
  * Runs SPAN-Lite (fused, 2x) entirely as WGSL compute shaders. No ONNX
  * Runtime, no WASM, no message passing: the video frame is pulled straight
  * into the GPU (importExternalTexture, zero-copy) and the result is written
  * to an overlay canvas. Runs inside the content script, so strict page CSPs
- * (YouTube) don't apply — WebGPU shader creation is not eval.
+ * (YouTube) don't apply - WebGPU shader creation is not eval.
  *
  * Inference dataflow (all at input resolution WxH until PixelShuffle):
  *   pre:        video -> x (3ch, mean-subtracted)
@@ -18,7 +18,7 @@
 
 const MEAN = [0.4488, 0.4371, 0.4040];
 
-// Half precision: implemented with f32 fallback, but off by default — see init().
+// Half precision: implemented with f32 fallback, but off by default - see init().
 const USE_F16 = false;
 
 // Weight tensors in export order (matches export_webgpu_weights.py), for a
@@ -60,7 +60,7 @@ class WebGPUSR {
     if (!adapter) { console.warn('[WebVSR] No WebGPU adapter'); return false; }
     this.hasTS = adapter.features.has('timestamp-query');
     // f16 is fully implemented with an automatic f32 fallback, but defaults OFF:
-    // on this GPU class scalar f16 is NOT faster than f32 (measured — the 2× only
+    // on this GPU class scalar f16 is NOT faster than f32 (measured - the 2× only
     // comes from packed vec2<f16>, a bigger rewrite with quality risk). Set
     // USE_F16 = true to trade a little accuracy for ~half the VRAM on tight GPUs.
     this.f16 = USE_F16 && adapter.features.has('shader-f16');
@@ -454,7 +454,7 @@ class WebGPUSR {
 // ── WGSL shaders ──────────────────────────────────────────────────
 // Storage buffers use the scalar type T (f16 when available, else f32); all
 // arithmetic is done in f32 (values cast on load/store) so half precision never
-// costs accuracy — the win is halved weight/feature memory traffic, which is the
+// costs accuracy - the win is halved weight/feature memory traffic, which is the
 // measured bottleneck. The f32 path makes every T(...) cast a no-op.
 
 // f32 -> IEEE-754 half-float bits, for uploading weights in f16 mode.
@@ -510,7 +510,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Each thread computes a 2x2 output block for a group of 8 output channels =
 // 32 register accumulators (statically named → no spill). A 4x4 input patch is
 // loaded once per input channel and reused across all 9 taps × 4 pixels, and
-// every weight fetch is reused across all 4 pixels — maximizing arithmetic
+// every weight fetch is reused across all 4 pixels - maximizing arithmetic
 // intensity (the measured bottleneck). Grid: ceil(W/2) × ceil(H/2) threads.
 const buildConv = (T) => {
   const L = [];
@@ -650,7 +650,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   textureStore(outTex, vec2u(X, Y), vec4f(r, g, b, 1.0));
 }`;
 
-// Catmull-Rom bicubic resample from the neural output to the display size —
+// Catmull-Rom bicubic resample from the neural output to the display size -
 // a cheap, sharp spatial finish (in the spirit of FSR's EASU) so a
 // governed-down internal resolution still fills the screen crisply.
 const SHADER_FINISH = /* wgsl */`

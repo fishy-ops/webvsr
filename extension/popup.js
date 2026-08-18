@@ -4,14 +4,14 @@ let settings = {
 };
 
 const PERF_HINT = {
-  light: 'Lowest GPU use, smoothest. Runs the model at a lower internal resolution.',
-  balanced: 'Recommended. Keeps the video smooth while adding detail.',
-  max: 'Native-resolution model every frame. Highest quality — may reduce FPS / use full GPU.',
+  light: 'Easiest on your graphics card and the smoothest. Does a little less work each frame.',
+  balanced: 'The one we recommend. Keeps video smooth while still cleaning it up.',
+  max: 'Goes all out on every frame for the best quality. Can lower the frame rate on slower machines.',
 };
 const QUAL_HINT = {
-  fast: 'Cheapest — processes a downscaled frame. Best for weak GPUs.',
-  medium: 'A balance of detail and speed.',
-  quality: 'Full detail (native internal resolution). Pair with Balanced/Light to stay smooth.',
+  fast: 'The lightest setting. Good if your computer is on the slower side.',
+  medium: 'A nice middle ground between detail and speed.',
+  quality: 'Full detail. Pair it with Balanced or Light if you want to keep things smooth.',
 };
 
 function renderSeg(id, value) {
@@ -20,7 +20,7 @@ function renderSeg(id, value) {
   });
 }
 
-// Sliding pill for each segmented control — animates to the active option.
+// Sliding pill for each segmented control; animates to the active option.
 document.querySelectorAll('.seg').forEach((seg) => {
   const s = document.createElement('span');
   s.className = 'seg-slider';
@@ -49,10 +49,10 @@ function moveSliders() {
 }
 function scaleHint(s) {
   s = parseFloat(s);
-  if (s >= 4) return 'Native 4×: a dedicated 4× reconstruction model (not an upscale of the 2×). Highest GPU cost.';
-  if (s > 2) return '<span class="warn">⚠ 3× runs the 4× model resampled down — 4× (native) is sharper for the same GPU cost.</span>';
-  if (s === 2) return 'Recommended: matches the model\'s true 2× reconstruction.';
-  return 'Below 2×: lighter, slightly softer than the model\'s full output.';
+  if (s >= 4) return 'Uses the dedicated 4× model. The sharpest option, and the hardest on your graphics card.';
+  if (s > 2) return '<span class="warn">⚠ 3× runs the 4× model and scales it back down. 4× looks sharper for the same effort.</span>';
+  if (s === 2) return 'The sweet spot. This is what the main model is actually built for.';
+  return 'A bit lighter than 2×, and a touch softer.';
 }
 
 const SHARP_PRESETS = [[0, 'Off'], [0.55, 'Low'], [0.9, 'Med'], [1.4, 'High']];

@@ -27,7 +27,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Rounded content surface — Chrome draws the popup window frame itself, so the
+  /* Rounded content surface. Chrome draws the popup window frame itself, so the
      rounding/clipping lives on this wrapper (not body, which Chrome auto-sizes). */
   .app {
     position: relative;
@@ -37,7 +37,7 @@
   }
   .app > * { position: relative; z-index: 1; }
 
-  /* Soft neutral light-field the frosted glass refracts (greys only — no colour cast). */
+  /* Soft neutral light-field the frosted glass refracts (greys only, no colour cast). */
   .app::before {
     content: ""; position: absolute; inset: -30%;
     background:
@@ -124,7 +124,7 @@
   .hint b { color: var(--text-dim); font-weight: 600; }
   .warn { color: #c07d2a; }
 
-  /* Custom sharpness slider — reveals only when Custom is chosen (no clutter). */
+  /* Custom sharpness slider. Only shows when Custom is chosen, to avoid clutter. */
   .custom-wrap {
     max-height: 0; opacity: 0; overflow: hidden; margin-top: 0;
     transition: max-height .3s cubic-bezier(.4,0,.2,1), opacity .25s ease, margin-top .3s ease;
@@ -238,12 +238,12 @@
       <div class="custom-val"><span id="sharpVal">1.40×</span><span class="custom-preset" id="sharpPreset"></span></div>
       <input type="range" id="sharpSlider" min="0" max="4" step="0.05">
     </div>
-    <div class="hint">Contrast-adaptive sharpening on top of the upscale — adds crispness without halos. <b>Custom</b> pushes past High.</div>
+    <div class="hint">Adds extra crispness on top of the upscale, without the ugly halos. <b>Custom</b> lets you push it past High.</div>
   </div>
 
   <div class="section">
     <div class="row">
-      <div><div class="row-label">Auto (only when it helps)</div><div class="row-desc">Skip SR when the source is already near screen resolution — saves GPU</div></div>
+      <div><div class="row-label">Auto (only when it helps)</div><div class="row-desc">Skips the work when the video is already about as sharp as your screen, so it doesn't waste power</div></div>
       <label class="toggle"><input type="checkbox" id="autoEngage"><span class="track"></span><span class="thumb"></span></label>
     </div>
     <div class="row">
@@ -267,7 +267,7 @@
       <label class="toggle"><input type="checkbox" id="onlyFullscreen"><span class="track"></span><span class="thumb"></span></label>
     </div>
     <div class="row">
-      <div><div class="row-label">Disable on this site</div><div class="row-desc" id="siteHost">—</div></div>
+      <div><div class="row-label">Disable on this site</div><div class="row-desc" id="siteHost">this site</div></div>
       <label class="toggle"><input type="checkbox" id="blockSite"><span class="track"></span><span class="thumb"></span></label>
     </div>
   </div>

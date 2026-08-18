@@ -2,7 +2,7 @@
 
 Real-time video super-resolution in the browser, on your own GPU. A Chrome
 (MV3) extension that upscales low-resolution / compressed web video live via a
-hand-written **WebGPU** pipeline — no servers, no uploads, no ONNX Runtime.
+hand-written **WebGPU** pipeline - no servers, no uploads, no ONNX Runtime.
 
 It shines where plain math upscaling can't: **removing compression artifacts**
 (JPEG/codec blocking, ringing, noise) from low-res sources, then finishing with
@@ -27,13 +27,13 @@ way.
 ## Results
 
 On realistically **compressed** low-res input (what real web video looks like),
-WebVSR removes blocking/noise that bicubic just enlarges — reconstruction, not
+WebVSR removes blocking/noise that bicubic just enlarges - reconstruction, not
 fabrication:
 
 ![Bicubic vs WebVSR vs Ground Truth on compressed input](results/compare_fair.png)
 
 *Left: bicubic. Middle: WebVSR. Right: ground truth.* On already-sharp/clean
-sources the gain is small (a good bicubic is hard to beat there) — which is
+sources the gain is small (a good bicubic is hard to beat there) - which is
 exactly why **Auto-engage** only spends GPU when the source is genuinely
 low-res.
 
@@ -63,16 +63,16 @@ loads into GPU buffers.
 
 ## Repo layout
 
-- `extension/` — the Chrome extension (engine, content script, popup, models).
+- `extension/` - the Chrome extension (engine, content script, popup, models).
   This is what you load unpacked / package for the Web Store.
-- `training/` — the ML side: SPAN-Lite architecture (`model_span.py`), training
+- `training/` - the ML side: SPAN-Lite architecture (`model_span.py`), training
   (`train_span.py`, `dataset.py`, `losses.py`), weight export
   (`export_webgpu_weights.py`), evaluation and visual comparisons
-  (`evaluate.py`, `make_compare_*.py`), and `OPTIMIZATION_LOG.md` — the full
+  (`evaluate.py`, `make_compare_*.py`), and `OPTIMIZATION_LOG.md` - the full
   record of how the real-time kernel was built.
-- `dev/` — browser benchmarking harnesses (`perf.html`, `bench.html`,
+- `dev/` - browser benchmarking harnesses (`perf.html`, `bench.html`,
   `test-live.html`) for profiling the engine outside the extension.
-- `results/` — the comparison images shown in this README.
+- `results/` - the comparison images shown in this README.
 
 ## Status
 
