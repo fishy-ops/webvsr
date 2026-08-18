@@ -1,41 +1,54 @@
-# WebVSR
+# WebVSR: Video Upscaler & Enhancer
 
-Real-time video super-resolution in the browser, on your own GPU. A Chrome
-(MV3) extension that upscales low-resolution / compressed web video live via a
-hand-written **WebGPU** pipeline - no servers, no uploads, no ONNX Runtime.
+Make blurry, low-quality video look sharper and clearer, right in your browser,
+using your own computer's GPU. WebVSR is a Chrome (MV3) extension that upscales
+and cleans up low-resolution / compressed web video live, through a hand-written
+**WebGPU** pipeline. No servers, no uploads, no sign-up.
 
-It shines where plain math upscaling can't: **removing compression artifacts**
-(JPEG/codec blocking, ringing, noise) from low-res sources, then finishing with
-a contrast-adaptive sharpen. On already-sharp/high-res video it stays out of the
-way.
+![Video Upscaler & Enhancer](results/webvsr-banner.png)
+
+## What it does
+
+A lot of web video is low-resolution and heavily compressed, so it looks soft,
+blocky, or fuzzy. WebVSR reconstructs a cleaner, sharper picture in real time and
+finishes with a contrast-adaptive sharpen. It shines exactly where plain math
+upscaling (bicubic/Lanczos) can't: **removing compression artifacts** (JPEG/codec
+blocking, ringing, noise) rather than just enlarging them.
+
+It's honest about what it does. It makes a genuinely better picture from
+low-quality video, but it does not invent fake detail, and it leaves already-sharp
+video alone so it isn't working your GPU for nothing.
 
 ## Highlights
 
 - **Real-time on modest hardware.** A 16-channel SPAN-Lite (2×) runs
-  720p→1440p in ~22 ms (≈46 fps) on an RTX 2070 SUPER. Hand-written WGSL compute
-  shaders (2×2 register-blocked convolutions), zero-copy from the video via
-  `importExternalTexture`.
+  720p → 1440p in about 22 ms (~46 fps) on an RTX 2070 SUPER. Hand-written WGSL
+  compute shaders (2×2 register-blocked convolutions), zero-copy from the video
+  via `importExternalTexture`.
 - **Never makes playback worse.** A frame-time governor (like a game engine's
-  dynamic-resolution scaling) keeps the model inside the video's frame budget; if
-  it still can't match the source framerate, it passes the original through
+  dynamic-resolution scaling) keeps the model inside the video's frame budget. If
+  it still can't match the source frame rate, it passes the original through
   untouched.
-- **Contrast-adaptive sharpening** (FSR-RCAS style, clamped to local min/max so
-  it adds crispness without halos).
-- **On-device & private.** Everything runs locally in the page.
-- Runs on any site / any `<video>` (all frames).
+- **Only runs when it helps.** Auto-engage skips SR when the source is already
+  about as sharp as your screen, so no GPU is spent for no gain.
+- **Contrast-adaptive sharpening** (FSR-RCAS style, clamped to the local
+  neighborhood so it adds crispness without halos), with an optional custom slider.
+- **On-device and private.** Everything runs locally on the page. Nothing is
+  uploaded and no data is collected.
+- Works on any site, on any HTML5 `<video>`.
 
-## Results
+## The honest quality story
 
-On realistically **compressed** low-res input (what real web video looks like),
-WebVSR removes blocking/noise that bicubic just enlarges - reconstruction, not
-fabrication:
+On realistically **compressed** low-res input (what real web video actually looks
+like), WebVSR removes the blocking and noise that bicubic just enlarges. This is
+reconstruction, not fabrication:
 
 ![Bicubic vs WebVSR vs Ground Truth on compressed input](results/compare_fair.png)
 
-*Left: bicubic. Middle: WebVSR. Right: ground truth.* On already-sharp/clean
-sources the gain is small (a good bicubic is hard to beat there) - which is
-exactly why **Auto-engage** only spends GPU when the source is genuinely
-low-res.
+*Left: plain bicubic upscale. Middle: WebVSR. Right: ground truth.* On
+already-sharp, clean sources the gain is small (a good bicubic is hard to beat
+there), which is exactly why Auto-engage only spends GPU when the source is
+genuinely low-res.
 
 ## How it works
 
@@ -43,8 +56,8 @@ low-res.
 network as WGSL compute shaders:
 
 ```
-video → importExternalTexture → conv_first → 4× SPAB blocks → concat → conv_last
-      → PixelShuffle(2×) → Catmull-Rom finish (to display size) → adaptive sharpen → canvas
+video -> importExternalTexture -> conv_first -> 4x SPAB blocks -> concat -> conv_last
+      -> PixelShuffle(2x) -> Catmull-Rom finish (to display size) -> adaptive sharpen -> canvas
 ```
 
 The model (SPAN-Lite, reparameterized to plain 3×3 convs at inference) is trained
@@ -53,28 +66,51 @@ in PyTorch (`training/train_span.py`) on a Real-ESRGAN-style degradation pipelin
 flat binary + JSON manifest (`training/export_webgpu_weights.py`) that the engine
 loads into GPU buffers.
 
-## Install (unpacked)
+## Install
 
-1. `chrome://extensions` → enable Developer mode → **Load unpacked** →
-   select the `extension/` folder.
-2. Open a video, click the **SR** button on it (or press **Alt+S**).
-3. Settings live in the toolbar popup and the on-video ⚙ flyout: GPU load,
+**Load unpacked (developer mode):**
+
+1. Go to `chrome://extensions` and turn on **Developer mode**.
+2. Click **Load unpacked** and select the `extension/` folder.
+3. Open a video and click the **SR** button on it, or press **Alt+S**.
+4. Settings live in the toolbar popup and the on-video gear flyout: GPU load,
    quality, target resolution, sharpness, per-site disable, and more.
+
+You'll need a recent version of Chrome with WebGPU support and a GPU. If WebGPU
+isn't available, the extension simply stays off.
+
+## Roadmap
+
+Where this is headed:
+
+- **Lighter, better upscaling models.** More quality for less GPU, so it runs
+  smoothly on weaker hardware and leaves more headroom on strong hardware.
+- **Frame interpolation (the big one).** A motion-smoothing model that generates
+  in-between frames to raise the effective frame rate and smooth out choppy or
+  low-fps video. Groundwork exists in `training/model_rife_lite.py`; bringing it to
+  the real-time WebGPU pipeline is the main future project.
+
+## Privacy
+
+Everything runs locally on your device. No video ever leaves your computer,
+nothing is uploaded, and no data is collected. Full policy:
+[PRIVACY.md](PRIVACY.md).
 
 ## Repo layout
 
-- `extension/` - the Chrome extension (engine, content script, popup, models).
-  This is what you load unpacked / package for the Web Store.
-- `training/` - the ML side: SPAN-Lite architecture (`model_span.py`), training
+- `extension/`: the Chrome extension (engine, content script, popup, models).
+  This is what you load unpacked or package for the Web Store.
+- `training/`: the ML side. SPAN-Lite architecture (`model_span.py`), training
   (`train_span.py`, `dataset.py`, `losses.py`), weight export
   (`export_webgpu_weights.py`), evaluation and visual comparisons
-  (`evaluate.py`, `make_compare_*.py`), and `OPTIMIZATION_LOG.md` - the full
-  record of how the real-time kernel was built.
-- `dev/` - browser benchmarking harnesses (`perf.html`, `bench.html`,
+  (`evaluate.py`, `make_compare_*.py`), the frame-interpolation groundwork
+  (`model_rife_lite.py`, `train_rife.py`), and `OPTIMIZATION_LOG.md` (the full
+  record of how the real-time kernel was built).
+- `dev/`: browser benchmarking harnesses (`perf.html`, `bench.html`,
   `test-live.html`) for profiling the engine outside the extension.
-- `results/` - the comparison images shown in this README.
+- `results/`: the images shown in this README.
 
 ## Status
 
-Engine and models are verified on real hardware. The extension's UI wiring is
-functional; issues/PRs welcome.
+The engine and models are verified on real hardware, and the extension is being
+prepared for the Chrome Web Store. Issues and pull requests are welcome.
