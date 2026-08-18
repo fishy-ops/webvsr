@@ -181,7 +181,7 @@
   .footer b { color: var(--text-dim); font-weight: 600; }
   .footer a { color: var(--text-dim); text-decoration: none; border-bottom: 1px solid rgba(120,132,155,0.45); transition: color .15s ease; }
   .footer a:hover { color: var(--text); border-bottom-color: rgba(120,132,155,0.7); }
-  .footer .gh { display: inline-block; margin-top: 9px; }
+  .footer .flinks { display: flex; gap: 16px; justify-content: center; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -275,7 +275,10 @@
   <div class="footer">
     Runs on your computer · Private · Free<br>
     Turn it on with the button on any video, or press <b>Alt+S</b>
-    <a class="gh" href="https://github.com/fishy-ops/webvsr" target="_blank" rel="noopener">View source on GitHub ↗</a>
+    <div class="flinks">
+      <a href="https://github.com/fishy-ops/webvsr/issues/new" target="_blank" rel="noopener">Report an issue</a>
+      <a href="https://github.com/fishy-ops/webvsr" target="_blank" rel="noopener">View source ↗</a>
+    </div>
   </div>
  </div>
 
