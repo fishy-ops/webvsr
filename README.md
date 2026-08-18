@@ -5,8 +5,6 @@ using your own computer's GPU. WebVSR is a Chrome (MV3) extension that upscales
 and cleans up low-resolution / compressed web video live, through a hand-written
 **WebGPU** pipeline. No servers, no uploads, no sign-up.
 
-![Video Upscaler & Enhancer](results/webvsr-banner.png)
-
 ## What it does
 
 A lot of web video is low-resolution and heavily compressed, so it looks soft,
@@ -43,12 +41,12 @@ On realistically **compressed** low-res input (what real web video actually look
 like), WebVSR removes the blocking and noise that bicubic just enlarges. This is
 reconstruction, not fabrication:
 
-![Bicubic vs WebVSR vs Ground Truth on compressed input](results/compare_fair.png)
+![Plain upscale vs WebVSR vs the original, on compressed low-res input](results/compare_showcase.png)
 
-*Left: plain bicubic upscale. Middle: WebVSR. Right: ground truth.* On
-already-sharp, clean sources the gain is small (a good bicubic is hard to beat
-there), which is exactly why Auto-engage only spends GPU when the source is
-genuinely low-res.
+*Left: a plain upscale of the compressed source. Middle: WebVSR at max quality
+with sharpening turned up. Right: the original.* On already-sharp, clean sources
+the gain is small (a good plain upscale is hard to beat there), which is exactly
+why Auto-engage only spends GPU when the source is genuinely low-res.
 
 ## How it works
 
