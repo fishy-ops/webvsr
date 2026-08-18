@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Video Upscaler & Enhancer",
   "version": "1.0.0",
-  "description": "Make blurry, low-quality video look clearer and sharper, right in your browser. Runs on your computer — free and private.",
+  "description": "Makes blurry, low-quality video look sharper and clearer, right in your browser. Runs on your computer, and it's free and private.",
   "permissions": [
     "activeTab",
     "storage"

@@ -1,56 +1,53 @@
-# WebVSR — Privacy Policy
+# Privacy Policy for Video Upscaler & Enhancer (WebVSR)
 
-**Effective date:** 15 August 2026
+**Last updated:** 15 August 2026
 
-WebVSR is a Chrome extension that upscales and sharpens video in real time, on
-your own device, using your GPU (via WebGPU). This policy explains what the
-extension does and does not do with your data. In short: **WebVSR collects
-nothing, sends nothing, and has no servers.**
+Here's the short version: this extension doesn't collect anything, doesn't send
+anything anywhere, and has no servers. Everything it does happens on your own
+computer.
 
-## Data we collect
+## What we collect
 
-**None.** WebVSR does not collect, store, transmit, sell, or share any personal
-data, browsing data, or usage data. There is no account, no login, no analytics,
-no advertising, and no third-party services of any kind.
+Nothing. There's no account, no login, no analytics, no ads, and no third-party
+services. The extension does not gather any personal data, browsing data, or
+usage data, and there's nowhere for that data to go even if it wanted to.
 
-## How your video is processed
+## How your video is handled
 
-All video processing happens **locally, in your browser, on your GPU**. When you
-turn WebVSR on for a video, the extension reads the video frames already playing
-on the page and runs its super-resolution and sharpening entirely on-device using
-WebGPU compute shaders. **Video frames never leave your computer** — nothing is
-uploaded, streamed, or sent to any server (there are no WebVSR servers to send it
-to). WebVSR does not read, record, or transmit the contents of the pages you
-visit.
+All of the work happens right in your browser, on your own graphics card. When
+you turn the extension on for a video, it reads the frames that are already
+playing on the page and cleans them up locally. Your video never leaves your
+computer. Nothing is uploaded or streamed anywhere, because there are no servers
+on the other end. The extension also doesn't read or send the contents of the
+pages you visit.
 
-## Settings
+## Your settings
 
-Your preferences (such as GPU-load level, quality, target scale, sharpness, and
-any per-site enable/disable choices) are saved locally on your device using the
-browser's `chrome.storage.local` API. These settings stay on your machine, are
-used only to remember your choices, and are not transmitted anywhere.
+Your preferences (things like how hard it works your graphics card, quality,
+sharpness, and which sites you've turned it off on) are saved on your own device
+using the browser's local storage. They stay on your machine and aren't sent
+anywhere.
 
-## Permissions and why they are needed
+## Permissions, and why they're needed
 
-- **Host access to all sites (`<all_urls>`):** Video can appear on any website, so
-  the extension needs to be able to detect and enhance `<video>` elements
-  wherever you watch. This access is used **only** to find videos and draw the
-  upscaled result over them locally. WebVSR does not read page content or send any
-  site data anywhere.
-- **`storage`:** To save your settings locally on your device (see above).
-- **`activeTab`:** To identify the current site so the "disable on this site"
-  toggle can apply to the page you are viewing.
+- **Access to all sites:** video can show up on any website, so the extension
+  needs to be able to spot videos wherever you're watching and draw the improved
+  picture over them. That's all this access is used for. It doesn't read page
+  content or send anything anywhere.
+- **Storage:** to remember your settings on your own device (see above).
+- **Active tab:** to know which site you're on, so the "turn off on this site"
+  option applies to the page you're actually looking at.
 
-## Children's privacy
+## Kids
 
-WebVSR does not collect any data from anyone, including children.
+The extension doesn't collect data from anyone, and that includes children.
 
-## Changes to this policy
+## Updates to this policy
 
-If this policy changes, the updated version will be posted at this location with a
-new effective date.
+If anything here changes, the new version will be posted at this same spot with an
+updated date.
 
-## Contact
+## Questions
 
-Questions about this policy can be raised via the project's issue tracker on
-GitHub: <https://github.com/fishy-ops/webvsr/issues>.
+If you have any questions, you can open an issue on the project's GitHub page:
+<https://github.com/fishy-ops/webvsr/issues>.

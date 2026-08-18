@@ -2,17 +2,17 @@
  * WebVSR Background (service worker)
  *
  * Owns persistent settings and broadcasts changes to all tabs. No inference
- * happens here anymore — the engine runs entirely in the content script.
+ * happens here anymore - the engine runs entirely in the content script.
  */
 
 const DEFAULT_SETTINGS = {
   enabled: false,        // last SR on/off state (for "remember state")
-  // GPU load / smoothness — maps to the governor's frame-time budget.
+  // GPU load / smoothness - maps to the governor's frame-time budget.
   perfMode: 'balanced',  // 'light' | 'balanced' | 'max'
-  // Model intensity — caps the neural net's internal resolution (until real
+  // Model intensity - caps the neural net's internal resolution (until real
   // lighter models are trained, this is a resolution ceiling on one model).
   quality: 'quality',    // 'fast' | 'medium' | 'quality'
-  targetScale: 2,        // output = base × this (1.5, 2, 3) — >2 warns
+  targetScale: 2,        // output = base × this (1.5, 2, 3) - >2 warns
   autoPause: true,       // pause SR when tab hidden or video paused
   rememberState: true,   // re-enable SR automatically where it was on
   showStats: true,       // show the on-video stats HUD
