@@ -1,5 +1,5 @@
 let settings = {
-  perfMode: 'max', quality: 'quality', targetScale: 4,
+  perfMode: 'max', quality: 'quality', targetScale: 2,
   autoPause: true, rememberState: true, showStats: true, sharpness: 1.4,
 };
 

@@ -12,7 +12,7 @@ const DEFAULT_SETTINGS = {
   // Model intensity - caps the neural net's internal resolution (until real
   // lighter models are trained, this is a resolution ceiling on one model).
   quality: 'quality',    // 'fast' | 'medium' | 'quality'
-  targetScale: 4,        // output = base × this (1.5, 2, 3, 4) - >2 warns
+  targetScale: 2,        // output = base × this (1.5, 2, 3, 4) - >2 warns
   autoPause: true,       // pause SR when tab hidden or video paused
   rememberState: true,   // re-enable SR automatically where it was on
   showStats: true,       // show the on-video stats HUD

@@ -21,7 +21,7 @@ const QUALITY_FRAC = { fast: 0.5, medium: 0.7, quality: 1.0 };
 
 let settings = {
   enabled: false, perfMode: 'max', quality: 'quality',
-  targetScale: 4, autoPause: true, rememberState: true, showStats: true,
+  targetScale: 2, autoPause: true, rememberState: true, showStats: true,
   onlyFullscreen: false, blockedSites: [], sharpness: 1.4, sharpnessCustom: false,
   autoEngage: true, showCompare: false,
 };
