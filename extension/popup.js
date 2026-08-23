@@ -1,6 +1,6 @@
 let settings = {
-  perfMode: 'balanced', quality: 'quality', targetScale: 2,
-  autoPause: true, rememberState: true, showStats: true,
+  perfMode: 'max', quality: 'quality', targetScale: 4,
+  autoPause: true, rememberState: true, showStats: true, sharpness: 1.4,
 };
 
 const PERF_HINT = {

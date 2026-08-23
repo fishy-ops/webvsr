@@ -8,17 +8,17 @@
 const DEFAULT_SETTINGS = {
   enabled: false,        // last SR on/off state (for "remember state")
   // GPU load / smoothness - maps to the governor's frame-time budget.
-  perfMode: 'balanced',  // 'light' | 'balanced' | 'max'
+  perfMode: 'max',       // 'light' | 'balanced' | 'max'
   // Model intensity - caps the neural net's internal resolution (until real
   // lighter models are trained, this is a resolution ceiling on one model).
   quality: 'quality',    // 'fast' | 'medium' | 'quality'
-  targetScale: 2,        // output = base × this (1.5, 2, 3) - >2 warns
+  targetScale: 4,        // output = base × this (1.5, 2, 3, 4) - >2 warns
   autoPause: true,       // pause SR when tab hidden or video paused
   rememberState: true,   // re-enable SR automatically where it was on
   showStats: true,       // show the on-video stats HUD
   onlyFullscreen: false, // only run SR while the video is fullscreen
   blockedSites: [],      // hostnames where WebVSR stays off entirely
-  sharpness: 0.9,        // contrast-adaptive sharpen strength (0=off … 1.4=high, or custom)
+  sharpness: 1.4,        // contrast-adaptive sharpen strength (0=off … 1.4=high, or custom)
   sharpnessCustom: false,// true = user is on the custom slider (sharpness can exceed High)
   autoEngage: true,      // only run SR when the source is clearly lower-res than the display
   showCompare: false,    // show the on-video hold-to-compare button (opt-in)
