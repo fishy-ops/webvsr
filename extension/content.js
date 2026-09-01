@@ -8,7 +8,11 @@
  */
 
 const DISPLAY_CAP = 2160;   // max finished (on-screen) height
-const NEURAL_CAP = 720;     // hard ceiling on neural input height (safety/VRAM)
+const NEURAL_CAP = 1080;    // hard ceiling on neural input height (safety/VRAM).
+// At 1080 the feature buffers are ~1.2 GB (9 x C x W*H x 4B); 1440 would be ~2.1 GB,
+// too much to ask of an integrated GPU. Below this the governor decides -- and a
+// source taller than the cap is downsampled before SR, which costs real detail,
+// so the cap should stay at or above the resolution most sources actually are.
 const MIN_NEURAL = 144;
 const NEURAL_STEP = 16;
 const START_NEURAL = 216;   // conservative start so first frames never stall
@@ -520,7 +524,11 @@ class VideoOverlay {
 
     if (settings.perfMode === 'max') {           // no cap: climb to the ceiling
       this.srH = Math.min(this._ceilH, this.srH + (this._ceilH - this.srH) * 0.5);
-      this.cantKeepUp = false;
+      // 'max' lifts the *resolution* cap, not the promise that SR never makes
+      // playback worse. At the ceiling there is no lower internal res left to
+      // drop to, so passthrough is the only remedy there is -- keep it armed.
+      if (med > frameInt * 1.25) this.cantKeepUp = true;
+      else if (med < frameInt * 0.95) this.cantKeepUp = false;
       return;
     }
     const ratio = med / this.budgetMs;
