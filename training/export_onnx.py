@@ -31,7 +31,7 @@ def count_inference_params(model):
     return total
 
 
-def export(checkpoint_path, output_dir="D:\\webvsr\\onnx", scale=2,
+def export(checkpoint_path, output_dir="onnx", scale=2,
            input_h=360, input_w=640):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -83,7 +83,7 @@ def export(checkpoint_path, output_dir="D:\\webvsr\\onnx", scale=2,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", help="Path to .pth checkpoint")
-    parser.add_argument("--output-dir", default=r"D:\webvsr\onnx")
+    parser.add_argument("--output-dir", default=r"onnx")
     parser.add_argument("--height", type=int, default=360)
     parser.add_argument("--width", type=int, default=640)
     args = parser.parse_args()

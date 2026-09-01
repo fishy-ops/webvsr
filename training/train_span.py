@@ -49,19 +49,16 @@ CONFIG = {
     "w_perceptual": 0.1,
     "w_fft": 0.01,
 
-    # Data — paths on YOUR machine
+    # Data. The 9500/500 split under /tank is what every recent run uses;
+    # override with --train-dirs / --val-dir for anything else.
     "train_dirs": [
-        r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_train_HR\DIV2K_train_HR",
-        r"C:\Users\reach\OneDrive\Documents\mamba-sr\Flickr2K",
-        # Add LSDIR path here when downloaded:
-        # r"D:\webvsr\data\LSDIR\train",
-        r"D:\webvsr\data\vimeo_frames",
+        r"/tank/webvsr/train_hr",
     ],
-    "val_dir": r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR",
+    "val_dir": r"/tank/webvsr/val_hr",
 
     # Output
-    "checkpoint_dir": r"D:\webvsr\checkpoints",
-    "log_file": r"D:\webvsr\training_log.json",
+    "checkpoint_dir": r"checkpoints",
+    "log_file": r"training_log.json",
 
     # Workers
     "num_workers": 6,

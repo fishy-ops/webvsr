@@ -6,7 +6,7 @@ cyan rounded square. Supersampled + LANCZOS-downsampled for clean anti-aliasing.
 from PIL import Image, ImageDraw
 import os
 
-ICON_DIR = r"D:\webvsr\extension\icons"
+ICON_DIR = r"extension/icons"
 os.makedirs(ICON_DIR, exist_ok=True)
 
 SIZES = [16, 48, 128]

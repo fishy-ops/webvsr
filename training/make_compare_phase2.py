@@ -9,8 +9,8 @@ from model_span import SPANLite
 from dataset import degrade_second_order
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
-VAL = r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR"
-OUT = r"D:\webvsr\results\compare_phase2.png"
+VAL = r"/tank/webvsr/datasets/DIV2K_valid_HR"
+OUT = r"results/compare_phase2.png"
 
 def load(ckpt):
     m = SPANLite(feature_channels=16, upscale=2).to(DEV).eval()
@@ -22,8 +22,8 @@ def load(ckpt):
                 mod._update_params()
     return m
 
-m1 = load(r"D:\webvsr\checkpoints_c16\best_phase1.pth")
-m2 = load(r"D:\webvsr\checkpoints_c16\best_phase2.pth")
+m1 = load(r"checkpoints_c16/best_phase1.pth")
+m2 = load(r"checkpoints_c16/best_phase2.pth")
 
 def to_t(im): return torch.from_numpy(np.array(im)).permute(2,0,1).float().div(255).unsqueeze(0)
 def to_im(t): return Image.fromarray((t.squeeze(0).clamp(0,1).permute(1,2,0).cpu().numpy()*255).astype(np.uint8))

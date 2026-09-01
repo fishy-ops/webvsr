@@ -3,8 +3,8 @@ import json
 import os
 from datetime import datetime
 
-LOG_PATH = r'D:\webvsr\training_log.json'
-CKPT_DIR = r'D:\webvsr\checkpoints'
+LOG_PATH = r'training_log.json'
+CKPT_DIR = r'checkpoints'
 
 if not os.path.exists(LOG_PATH):
     print("No training log found.")

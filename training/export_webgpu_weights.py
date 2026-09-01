@@ -95,8 +95,8 @@ def export_weights(checkpoint_path, output_path, channels=32, scale=2):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', default='D:/webvsr/checkpoints/best_phase2.pth')
-    parser.add_argument('--output', default='D:/webvsr/extension/models/span_lite_2x.bin')
+    parser.add_argument('--checkpoint', default='checkpoints/best_phase2.pth')
+    parser.add_argument('--output', default='extension/models/span_lite_2x.bin')
     parser.add_argument('--channels', type=int, default=32)
     parser.add_argument('--scale', type=int, default=2)
     args = parser.parse_args()

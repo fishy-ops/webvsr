@@ -14,7 +14,7 @@ BENCHMARKS = {
     ],
 }
 
-OUT_DIR = r'D:\webvsr\data\benchmarks'
+OUT_DIR = r'/tank/webvsr/datasets/benchmarks'
 os.makedirs(OUT_DIR, exist_ok=True)
 
 for name, urls in BENCHMARKS.items():

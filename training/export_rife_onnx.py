@@ -5,7 +5,7 @@ from pathlib import Path
 from model_rife_lite import RIFELite
 
 
-def export(checkpoint_path, output_dir="D:\\webvsr\\onnx", input_h=360, input_w=640):
+def export(checkpoint_path, output_dir="onnx", input_h=360, input_w=640):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -55,7 +55,7 @@ def export(checkpoint_path, output_dir="D:\\webvsr\\onnx", input_h=360, input_w=
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=None)
-    parser.add_argument("--output-dir", default=r"D:\webvsr\onnx")
+    parser.add_argument("--output-dir", default=r"onnx")
     parser.add_argument("--height", type=int, default=360)
     parser.add_argument("--width", type=int, default=640)
     args = parser.parse_args()

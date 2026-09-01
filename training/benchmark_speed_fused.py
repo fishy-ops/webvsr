@@ -14,7 +14,7 @@ device = torch.device('cuda')
 print(f"GPU: {torch.cuda.get_device_name()}")
 
 model = SPANLite(num_in_ch=3, num_out_ch=3, feature_channels=32, upscale=2)
-ckpt = torch.load('D:/webvsr/checkpoints/best_phase2.pth', map_location=device, weights_only=False)
+ckpt = torch.load('checkpoints/best_phase2.pth', map_location=device, weights_only=False)
 model.load_state_dict(ckpt['model'])
 model.to(device).eval()
 

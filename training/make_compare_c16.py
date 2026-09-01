@@ -6,11 +6,11 @@ import numpy as np
 from model_span import SPANLite
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
-VAL = r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR"
-OUT = r"D:\webvsr\results\compare_c16.png"
+VAL = r"/tank/webvsr/datasets/DIV2K_valid_HR"
+OUT = r"results/compare_c16.png"
 
 m = SPANLite(feature_channels=16, upscale=2).to(DEV).eval()
-ck = torch.load(r"D:\webvsr\checkpoints_c16\best_phase1.pth", map_location="cpu", weights_only=False)
+ck = torch.load(r"checkpoints_c16/best_phase1.pth", map_location="cpu", weights_only=False)
 m.load_state_dict(ck.get("model", ck))
 with torch.no_grad():
     for mod in m.modules():

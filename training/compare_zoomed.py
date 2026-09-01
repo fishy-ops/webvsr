@@ -8,9 +8,9 @@ from model_span import SPANLite
 from fxaa import fxaa_pass
 from rcas import rcas_sharpen
 
-IMG_DIR = r'C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR'
-OUT_DIR = r'D:\webvsr\comparisons_zoomed'
-CKPT = r'D:\webvsr\checkpoints\best_phase2.pth'
+IMG_DIR = r'/tank/webvsr/datasets/DIV2K_valid_HR'
+OUT_DIR = r'comparisons_zoomed'
+CKPT = r'checkpoints/best_phase2.pth'
 
 to_tensor = transforms.ToTensor()
 to_pil = transforms.ToPILImage()

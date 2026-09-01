@@ -2,11 +2,11 @@
 Data download helper for WebVSR training.
 
 Storage layout:
-  C:\...\mamba-sr\DIV2K_train_HR\  (already exists, ~3.4 GB)
-  C:\...\mamba-sr\DIV2K_valid_HR\  (already exists, ~430 MB)
-  C:\...\mamba-sr\Flickr2K\        (already exists, ~11 GB)
-  D:\webvsr\data\vimeo_frames\     (to download, ~2 GB sampled)
-  D:\webvsr\data\LSDIR\            (to download, ~50-100 GB)
+  /tank/webvsr/datasets/DIV2K_train_HR/  (already exists, ~3.4 GB)
+  /tank/webvsr/datasets/DIV2K_valid_HR/  (already exists, ~430 MB)
+  /tank/webvsr/datasets/Flickr2K/        (already exists, ~11 GB)
+  /tank/webvsr/train_hr     (to download, ~2 GB sampled)
+  /tank/webvsr/datasets/LSDIR/            (to download, ~50-100 GB)
 
 Run this script to:
   1. Download Vimeo-90K septuplet dataset
@@ -25,7 +25,7 @@ from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 VIMEO_URL = "http://data.csail.mit.edu/toflow/vimeo_septuplet.zip"
-DATA_DIR = Path(r"D:\webvsr\data")
+DATA_DIR = Path(r"/tank/webvsr/datasets")
 VIMEO_DIR = DATA_DIR / "vimeo_septuplet"
 VIMEO_FRAMES_DIR = DATA_DIR / "vimeo_frames"
 
@@ -126,10 +126,10 @@ def print_lsdir_instructions():
     print("Download from: https://data.vision.ee.ethz.ch/yawli/index.html")
     print("  or: https://github.com/ofsoundof/LSDIR")
     print()
-    print(f"Place the training images at: D:\\webvsr\\data\\LSDIR\\train\\")
+    print(f"Place the training images at: /tank/webvsr/datasets/LSDIR/train/")
     print()
     print("After downloading, uncomment the LSDIR path in train_span.py CONFIG:")
-    print('  r"D:\\webvsr\\data\\LSDIR\\train",')
+    print('  r"/tank/webvsr/datasets/LSDIR/train",')
     print()
     print("If LSDIR is too large, you can start training with just")
     print("DIV2K + Flickr2K (~3,450 images) and add LSDIR later.")
@@ -154,11 +154,11 @@ if __name__ == "__main__":
         print("SUMMARY: Data status")
         print("=" * 60)
         datasets = {
-            "DIV2K train": Path(r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_train_HR\DIV2K_train_HR"),
-            "DIV2K valid": Path(r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR"),
-            "Flickr2K": Path(r"C:\Users\reach\OneDrive\Documents\mamba-sr\Flickr2K"),
+            "DIV2K train": Path(r"/tank/webvsr/datasets/DIV2K_train_HR"),
+            "DIV2K valid": Path(r"/tank/webvsr/datasets/DIV2K_valid_HR"),
+            "Flickr2K": Path(r"/tank/webvsr/datasets/Flickr2K"),
             "Vimeo frames": VIMEO_FRAMES_DIR,
-            "LSDIR train": Path(r"D:\webvsr\data\LSDIR\train"),
+            "LSDIR train": Path(r"/tank/webvsr/datasets/LSDIR/train"),
         }
         for name, p in datasets.items():
             if p.exists():

@@ -38,7 +38,7 @@ model.train()
 
 # Dataset — just use DIV2K for the smoke test
 ds = SRDataset(
-    data_dirs=[r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_train_HR\DIV2K_train_HR"],
+    data_dirs=[r"/tank/webvsr/datasets/DIV2K_train_HR"],
     crop_size=256, scale=2, use_degradation=True,
 )
 loader = DataLoader(ds, batch_size=4, shuffle=True, num_workers=0)
