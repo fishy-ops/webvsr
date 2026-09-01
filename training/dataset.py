@@ -217,19 +217,38 @@ class SRDataset(Dataset):
 
 
 class ValidationDataset(Dataset):
-    """Simple validation dataset — bicubic downscale only, no augmentation."""
+    """Validation set, degraded the same way the training set is.
+
+    A validation set that only downscales bicubically measures a different
+    task from the one the model is deployed on, and selection then optimises
+    toward the wrong distribution: a 200-epoch run improved bicubic-val DISTS
+    0.0656 -> 0.0587 while its DISTS on codec-degraded video got *worse*,
+    0.0988 -> 0.1023. Pass `degrade_fn` to keep validation in the deployment
+    domain.
+
+    The degradation is randomised, so it is seeded per index: image i draws
+    the same codec, quality and resize mode on every epoch. Without that,
+    val DISTS jitters with the draw and "best checkpoint" starts to mean
+    "easiest sample of encoders", which is not a property of the model. The
+    global RNG state is saved and restored so seeding here cannot perturb
+    the training stream.
+    """
 
     EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
 
-    def __init__(self, data_dir, scale=2):
+    def __init__(self, data_dir, scale=2, degrade_fn=None, seed=20260901):
         self.scale = scale
+        self.degrade_fn = degrade_fn
+        self.seed = seed
         self.to_tensor = transforms.ToTensor()
         data_dir = Path(data_dir)
         self.paths = sorted(
             str(f) for f in data_dir.rglob("*")
             if f.suffix.lower() in self.EXTENSIONS
         )
-        print(f"ValidationDataset: {len(self.paths)} images from {data_dir}")
+        how = "codec-degraded (seeded)" if degrade_fn else "bicubic only"
+        print(f"ValidationDataset: {len(self.paths)} images from {data_dir} "
+              f"[{how}]")
 
     def __len__(self):
         return len(self.paths)
@@ -241,6 +260,24 @@ class ValidationDataset(Dataset):
         h = h - h % self.scale
         w = w - w % self.scale
         hr = hr[:, :h, :w]
+
+        if self.degrade_fn is not None:
+            state = random.getstate()
+            random.seed(self.seed + idx)
+            try:
+                lr = self.degrade_fn(hr, self.scale)
+            finally:
+                random.setstate(state)
+            # A codec stage can return an off-by-one size on odd dimensions.
+            if lr.shape[1:] != (h // self.scale, w // self.scale):
+                lr = F.interpolate(
+                    lr.unsqueeze(0),
+                    size=(h // self.scale, w // self.scale),
+                    mode="bicubic",
+                    align_corners=False,
+                ).squeeze(0)
+            return lr.clamp(0, 1), hr
+
         lr = F.interpolate(
             hr.unsqueeze(0),
             size=(h // self.scale, w // self.scale),

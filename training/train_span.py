@@ -231,6 +231,9 @@ def train():
     val_dataset = ValidationDataset(
         data_dir=cfg["val_dir"],
         scale=cfg["scale"],
+        # Validate in the same domain we train and deploy in, or selection
+        # optimises toward bicubic while the product runs on codec artifacts.
+        degrade_fn=degrade_fn,
     )
 
     train_loader = DataLoader(
