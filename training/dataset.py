@@ -158,13 +158,18 @@ class SRDataset(Dataset):
     EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
     def __init__(self, data_dirs, crop_size=256, scale=2,
-                 use_degradation=True, min_size=256, clean_ratio=0.3):
+                 use_degradation=True, min_size=256, clean_ratio=0.3,
+                 degrade_fn=None):
         self.crop_size = crop_size
         self.scale = scale
         self.use_degradation = use_degradation
         self.min_size = min_size
         self.clean_ratio = clean_ratio
         self.to_tensor = transforms.ToTensor()
+        # Swappable degradation. Default is the JPEG-on-stills chain; pass
+        # codec_degrade.second_order_codec to train against real encoder
+        # artifacts instead. Signature: fn(hr_tensor, scale) -> lr_tensor.
+        self.degrade_fn = degrade_fn or degrade_second_order
 
         self.paths = []
         for d in data_dirs:
@@ -197,7 +202,7 @@ class SRDataset(Dataset):
         hr = self.to_tensor(hr_pil)
 
         if self.use_degradation and random.random() > self.clean_ratio:
-            lr = degrade_second_order(hr, self.scale)
+            lr = self.degrade_fn(hr, self.scale)
         else:
             h, w = hr.shape[1], hr.shape[2]
             lr = F.interpolate(

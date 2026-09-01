@@ -75,9 +75,20 @@ def psnr(pred, target):
     return 10 * math.log10(1.0 / mse.item())
 
 
-def validate(model, val_loader, device):
+def _make_dists(device):
+    """DISTS scorer, or None if unavailable -- never fatal to a training run."""
+    try:
+        from DISTS_pytorch import DISTS
+        return DISTS().to(device).eval()
+    except Exception as e:
+        print(f"DISTS unavailable ({type(e).__name__}); selection falls back to PSNR")
+        return None
+
+
+def validate(model, val_loader, device, dists_fn=None):
     model.eval()
     total_psnr = 0
+    total_dists = 0.0
     count = 0
     with torch.no_grad(), autocast(device_type="cuda", dtype=torch.float16):
         for lr, hr in val_loader:
@@ -90,8 +101,12 @@ def validate(model, val_loader, device):
             for i in range(sr.shape[0]):
                 total_psnr += psnr(sr[i], hr[i])
                 count += 1
+            if dists_fn is not None:
+                total_dists += dists_fn(sr.clamp(0, 1).float(),
+                                        hr.clamp(0, 1).float()).mean().item() * sr.shape[0]
     model.train()
-    return total_psnr / max(count, 1)
+    n = max(count, 1)
+    return total_psnr / n, (total_dists / n if dists_fn is not None else None)
 
 
 def build_scheduler(optimizer, total_epochs, warmup_epochs=5):
@@ -138,6 +153,30 @@ def train():
     parser.add_argument("--ckpt-dir", default=CONFIG["checkpoint_dir"])
     parser.add_argument("--total-epochs", type=int, default=CONFIG["total_epochs"])
     parser.add_argument("--phase1-epochs", type=int, default=CONFIG["phase1_epochs"])
+    # The committed CONFIG paths are Windows paths from the original machine and
+    # no longer resolve; these let a run specify its own data without editing it.
+    parser.add_argument("--train-dirs", nargs="+", default=None,
+                        help="override CONFIG['train_dirs']")
+    parser.add_argument("--val-dir", default=None,
+                        help="override CONFIG['val_dir']")
+    parser.add_argument("--log-file", default=None,
+                        help="override CONFIG['log_file']")
+    parser.add_argument("--codec-degrade", action="store_true",
+                        help="degrade with real video encoders (H.264/H.265/MPEG-4) "
+                             "instead of JPEG -- matches the deployment domain")
+    parser.add_argument("--num-workers", type=int, default=None)
+    # w_fft ships at 0.01, which is ~0.6% of the loss -- effectively off. It is
+    # the term that penalises missing high frequency, i.e. the direct lever
+    # against the over-smoothing that PSNR selection rewards.
+    parser.add_argument("--w-fft", type=float, default=None)
+    parser.add_argument("--w-perceptual", type=float, default=None)
+    # "unshuffle" runs the trunk at half resolution via PixelUnshuffle(2),
+    # ~4x fewer spatial positions for the same channel count.
+    parser.add_argument("--arch", choices=["span", "unshuffle"], default="span")
+    parser.add_argument("--init-from", default=None,
+                        help="load model weights from this checkpoint and start "
+                             "fresh (no optimizer or epoch state) -- for adapting "
+                             "an existing model to a new degradation")
     args = parser.parse_args()
 
     cfg = dict(CONFIG)  # copy so per-run overrides don't mutate the shared config
@@ -146,13 +185,39 @@ def train():
     cfg["checkpoint_dir"] = args.ckpt_dir
     cfg["total_epochs"] = args.total_epochs
     cfg["phase1_epochs"] = args.phase1_epochs
+    if args.train_dirs:
+        cfg["train_dirs"] = args.train_dirs
+    if args.val_dir:
+        cfg["val_dir"] = args.val_dir
+    if args.log_file:
+        cfg["log_file"] = args.log_file
+    if args.num_workers is not None:
+        cfg["num_workers"] = args.num_workers
+    if args.w_fft is not None:
+        cfg["w_fft"] = args.w_fft
+    if args.w_perceptual is not None:
+        cfg["w_perceptual"] = args.w_perceptual
+
+    degrade_fn = None
+    if args.codec_degrade:
+        from codec_degrade import second_order_codec
+        degrade_fn = second_order_codec
+        print("degradation: real video codecs (H.264/H.265/MPEG-4)")
+    else:
+        print("degradation: JPEG (legacy)")
+
     cfg["log_file"] = os.path.join(args.ckpt_dir, "training_log.json")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dists_fn = _make_dists(device)
     os.makedirs(cfg["checkpoint_dir"], exist_ok=True)
 
 
     # ── Model ───────────────────────────────────────────────────────
-    model = SPANLite(
+    if args.arch == "unshuffle":
+        from model_span_unshuffle import SPANLiteUnshuffle as _Arch
+    else:
+        _Arch = SPANLite
+    model = _Arch(
         upscale=cfg["scale"],
         feature_channels=cfg["feature_channels"],
     ).to(device)
@@ -161,6 +226,7 @@ def train():
     # ── Data ────────────────────────────────────────────────────────
     train_dataset = SRDataset(
         data_dirs=cfg["train_dirs"],
+        degrade_fn=degrade_fn,
         crop_size=cfg["crop_size"],
         scale=cfg["scale"],
         use_degradation=True,
@@ -202,6 +268,7 @@ def train():
     # ── Resume / phase logic ────────────────────────────────────────
     start_epoch = 0
     best_psnr = 0
+    best_dists = float('inf')
     current_phase = 1
     log_entries = []
 
@@ -232,6 +299,14 @@ def train():
             log_entries = json.load(f)
 
     # ── Training loop ───────────────────────────────────────────────
+    if args.init_from:
+        blob = torch.load(args.init_from, map_location="cpu", weights_only=False)
+        state = blob.get("model", blob.get("model_state_dict", blob))
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        print(f"init-from {args.init_from}: "
+              f"{len(missing)} missing, {len(unexpected)} unexpected tensors")
+        start_epoch, best_psnr, current_phase = 0, 0, 1
+
     print(f"\nStarting training from epoch {start_epoch}, phase {current_phase}")
     print(f"Effective batch size: {cfg['batch_size'] * cfg['accumulation_steps']}")
 
@@ -294,8 +369,9 @@ def train():
 
         # Validate every 5 epochs or last epoch of each phase
         val_psnr = 0
+        val_dists = None
         if epoch % 5 == 0 or epoch == cfg["phase1_epochs"] - 1 or epoch == cfg["total_epochs"] - 1:
-            val_psnr = validate(model, val_loader, device)
+            val_psnr, val_dists = validate(model, val_loader, device, dists_fn)
 
         # Logging
         lr_now = optimizer.param_groups[0]["lr"]
@@ -308,6 +384,7 @@ def train():
 
         entry = {
             "epoch": epoch, "phase": current_phase, "loss": avg_loss,
+            "dists": val_dists,
             "components": avg_components, "psnr": val_psnr, "lr": lr_now,
             "time_s": elapsed,
         }
@@ -321,14 +398,26 @@ def train():
             current_phase, latest_ckpt
         )
 
-        if val_psnr > best_psnr and val_psnr > 0:
-            best_psnr = val_psnr
+        # Selection: DISTS when available (lower is better), PSNR otherwise.
+        # Run 1 showed PSNR selection ships the blurriest good model.
+        if val_dists is not None:
+            improved = val_dists < best_dists
+        else:
+            improved = val_psnr > best_psnr and val_psnr > 0
+        if improved:
+            if val_dists is not None:
+                best_dists = val_dists
+            best_psnr = max(best_psnr, val_psnr)
             best_path = best_p1_ckpt if current_phase == 1 else best_p2_ckpt
             save_checkpoint(
                 model, optimizer, scheduler, scaler, epoch, best_psnr,
                 current_phase, best_path
             )
-            print(f"  >> New best PSNR: {best_psnr:.2f} dB (saved)")
+            if val_dists is not None:
+                print(f"  >> New best DISTS: {best_dists:.4f} "
+                      f"(PSNR {val_psnr:.2f} dB) (saved)")
+            else:
+                print(f"  >> New best PSNR: {best_psnr:.2f} dB (saved)")
 
         if epoch % 50 == 0 and epoch > 0:
             milestone = os.path.join(cfg["checkpoint_dir"], f"epoch_{epoch:03d}.pth")
