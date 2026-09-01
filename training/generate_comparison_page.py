@@ -18,7 +18,7 @@ from PIL import Image
 
 from model_span import SPANLite
 
-IMG_DIR = r'C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR'
+IMG_DIR = r'/tank/webvsr/datasets/DIV2K_valid_HR'
 CROP_SIZE = 384
 to_tensor = transforms.ToTensor()
 to_pil = transforms.ToPILImage()
@@ -124,9 +124,9 @@ function updateSlider(i, val) {{
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', default='D:/webvsr/checkpoints/best_phase1.pth')
+    parser.add_argument('--checkpoint', default='checkpoints/best_phase1.pth')
     parser.add_argument('--count', type=int, default=8)
-    parser.add_argument('--output', default='D:/webvsr/comparison_report.html')
+    parser.add_argument('--output', default='comparison_report.html')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

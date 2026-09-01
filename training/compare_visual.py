@@ -29,8 +29,8 @@ def load_model(checkpoint_path, device):
     return model
 
 
-IMG_DIR = r'C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR'
-OUT_DIR = r'D:\webvsr\comparisons'
+IMG_DIR = r'/tank/webvsr/datasets/DIV2K_valid_HR'
+OUT_DIR = r'comparisons'
 CROP_SIZE = 256
 
 to_tensor = transforms.ToTensor()
@@ -98,7 +98,7 @@ def make_comparison(model, img_path, device, crop_size=CROP_SIZE):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', default='D:/webvsr/checkpoints/best_phase2.pth')
+    parser.add_argument('--checkpoint', default='checkpoints/best_phase2.pth')
     parser.add_argument('--images', nargs='*', help='Specific image filenames')
     parser.add_argument('--count', type=int, default=5, help='Random images to compare')
     parser.add_argument('--crop', type=int, default=256)

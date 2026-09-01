@@ -9,14 +9,14 @@ from model_span import SPANLite
 from dataset import degrade_second_order
 
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
-VAL = r"C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR"
-OUT = r"D:\webvsr\results\compare_showcase.png"
+VAL = r"/tank/webvsr/datasets/DIV2K_valid_HR"
+OUT = r"results/compare_showcase.png"
 SHARP = 1.3          # strong sharpen (extension "High" is 1.4)
 CROP = 190           # half-size of the center crop -> 380px tiles
 INDICES = [0, 1, 2]  # which sorted validation images to use
 
 m = SPANLite(feature_channels=16, upscale=2).to(DEV).eval()
-ck = torch.load(r"D:\webvsr\checkpoints_c16\best_phase1.pth", map_location="cpu", weights_only=False)
+ck = torch.load(r"checkpoints_c16/best_phase1.pth", map_location="cpu", weights_only=False)
 m.load_state_dict(ck.get("model", ck))
 with torch.no_grad():
     for mod in m.modules():

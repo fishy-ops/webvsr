@@ -72,7 +72,7 @@ def benchmark_onnx(onnx_path, height, width, warmup=5, runs=30):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', default='D:/webvsr/checkpoints/best_phase2.pth')
+    parser.add_argument('--checkpoint', default='checkpoints/best_phase2.pth')
     parser.add_argument('--onnx', default=None, help='ONNX model path (optional)')
     args = parser.parse_args()
 

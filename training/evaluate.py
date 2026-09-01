@@ -74,7 +74,7 @@ def load_model(checkpoint_path, device):
 
 
 DATASET_PATHS = {
-    'DIV2K_val': r'C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_valid_HR\DIV2K_valid_HR',
+    'DIV2K_val': r'/tank/webvsr/datasets/DIV2K_valid_HR',
 }
 
 to_tensor = transforms.ToTensor()
@@ -146,10 +146,10 @@ def evaluate(model, dataset_name, device, save_dir=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint', default='D:/webvsr/checkpoints/best_phase2.pth')
+    parser.add_argument('--checkpoint', default='checkpoints/best_phase2.pth')
     parser.add_argument('--dataset', default='all', help='DIV2K_val or all')
     parser.add_argument('--save-images', action='store_true')
-    parser.add_argument('--output', default='D:/webvsr/eval_results.json')
+    parser.add_argument('--output', default='eval_results.json')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -163,7 +163,7 @@ def main():
 
     for ds in datasets:
         print(f"\n=== {ds} ===")
-        save_dir = os.path.join('D:/webvsr/eval_output', ds) if args.save_images else None
+        save_dir = os.path.join('eval_output', ds) if args.save_images else None
         result = evaluate(model, ds, device, save_dir)
         if result:
             all_results.append(result)

@@ -111,9 +111,9 @@ def train(args):
     print(f"Model params: {params:,}")
 
     img_dirs = [
-        r'C:\Users\reach\OneDrive\Documents\mamba-sr\DIV2K_train_HR',
-        r'C:\Users\reach\OneDrive\Documents\mamba-sr\Flickr2K',
-        r'D:\webvsr\data\vimeo_frames',
+        r'/tank/webvsr/datasets/DIV2K_train_HR',
+        r'/tank/webvsr/datasets/Flickr2K',
+        r'/tank/webvsr/train_hr',
     ]
 
     dataset = SyntheticFlowDataset(img_dirs, crop_size=256, max_flow=16)
@@ -192,6 +192,6 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--workers', type=int, default=4)
-    parser.add_argument('--ckpt-dir', default='D:/webvsr/checkpoints')
+    parser.add_argument('--ckpt-dir', default='checkpoints')
     args = parser.parse_args()
     train(args)
