@@ -6,8 +6,6 @@ checkpoints_c16/
 *.pth
 # Old exports / caches / scratch
 onnx/
-# Internal handoff / context-transfer notes (kept locally, not for the public repo)
-HANDOFF.md
 __pycache__/
 *.pyc
 comparisons/
