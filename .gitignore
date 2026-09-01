@@ -23,3 +23,7 @@ node_modules/
 Thumbs.db
 
 *.log
+
+# Local scratch: editor backups and generated drafts
+*.bak*
+*.gen
