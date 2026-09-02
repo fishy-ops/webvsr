@@ -49,10 +49,23 @@ CONFIG = {
     "w_perceptual": 0.1,
     "w_fft": 0.01,
 
-    # Data. The 9500/500 split under /tank is what every recent run uses;
-    # override with --train-dirs / --val-dir for anything else.
+    # Data. Vimeo-90K frames are 448x256, which caps the HR crop at 256 and is
+    # why the 4x crop-512 experiment could not run (RESEARCH.md 6a). DIV2K has a
+    # median short side of 1356px, so it lifts that ceiling and supplies clean
+    # HR targets -- the Vimeo frames are themselves compressed web video, so
+    # they teach the model to reproduce artifacts already present in the target.
+    #
+    # A source may be written "path:repeat". Sampling is per-image, so without a
+    # repeat a 2040x1356 DIV2K photo yields one crop per epoch exactly like a
+    # 448x256 Vimeo frame despite holding ~27x the pixels. x4 puts DIV2K at
+    # ~25% of the mix; a 2K image holds ~42 non-overlapping 256px crops, so this
+    # is nowhere near re-using the same pixels.
+    #
+    # NOTE: the shipped checkpoints predate this mix. Reproducing them exactly
+    # needs --train-dirs /tank/webvsr/train_hr on its own.
     "train_dirs": [
         r"/tank/webvsr/train_hr",
+        r"/tank/webvsr/datasets/DIV2K_train_HR:4",
     ],
     "val_dir": r"/tank/webvsr/val_hr",
 

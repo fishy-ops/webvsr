@@ -180,16 +180,54 @@ class SRDataset(Dataset):
         # artifacts instead. Signature: fn(hr_tensor, scale) -> lr_tensor.
         self.degrade_fn = degrade_fn or degrade_second_order
 
+        # Sources may be "path" or "path:repeat". Sampling is per-image, so a
+        # 2040x1356 DIV2K photo otherwise contributes one crop per epoch just
+        # like a 448x256 Vimeo frame despite holding ~27x the pixels; the
+        # repeat count is how a high-resolution source earns proportionate
+        # weight in the mix.
         self.paths = []
-        for d in data_dirs:
-            d = Path(d)
+        summary = []
+        for entry in data_dirs:
+            entry = str(entry)
+            repeat = 1
+            if ":" in entry and not entry[1:3] == ":\\":
+                head, _, tail = entry.rpartition(":")
+                if tail.isdigit():
+                    entry, repeat = head, int(tail)
+            d = Path(entry)
             if not d.exists():
                 print(f"Warning: {d} does not exist, skipping")
                 continue
+            found, kept = 0, []
             for f in sorted(d.rglob("*")):
-                if f.suffix.lower() in self.EXTENSIONS:
-                    self.paths.append(str(f))
-        print(f"SRDataset: {len(self.paths)} images from {len(data_dirs)} sources")
+                if f.suffix.lower() not in self.EXTENSIONS:
+                    continue
+                found += 1
+                try:
+                    with Image.open(f) as im:
+                        w, h = im.size
+                except Exception:
+                    continue
+                # Filter here rather than fixing it up in __getitem__: an image
+                # smaller than the crop can only be used by upscaling it, which
+                # makes the HR *target* a bicubic blur and teaches the model to
+                # reproduce it (see RESEARCH.md 6a).
+                if min(w, h) >= crop_size:
+                    kept.append(str(f))
+            self.paths.extend(kept * repeat)
+            summary.append((d.name, len(kept), found, repeat))
+
+        for name, kept, found, repeat in summary:
+            note = "" if kept == found else f" ({found - kept} below {crop_size}px, dropped)"
+            mult = "" if repeat == 1 else f" x{repeat}"
+            print(f"  {name}: {kept}/{found} usable{note}{mult}")
+        print(f"SRDataset: {len(self.paths)} samples from {len(summary)} sources")
+        if not self.paths:
+            raise ValueError(
+                f"no image in {list(data_dirs)} is at least {crop_size}px on its "
+                f"short side. Lower --crop-size or point at a higher-resolution "
+                f"source; upscaling to fit would fabricate the HR target."
+            )
 
     def __len__(self):
         return len(self.paths)
@@ -201,12 +239,8 @@ class SRDataset(Dataset):
         except Exception:
             img = Image.new("RGB", (self.crop_size, self.crop_size), (0, 0, 0))
 
-        if min(img.size) < self.min_size:
-            img = img.resize(
-                (max(img.size[0], self.min_size), max(img.size[1], self.min_size)),
-                Image.BICUBIC,
-            )
-
+        # No size fix-up here: paths were filtered to min(w, h) >= crop_size at
+        # construction, and random_crop raises if that ever fails to hold.
         hr_pil = random_crop(img, self.crop_size)
         hr = self.to_tensor(hr_pil)
 
