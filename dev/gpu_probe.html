@@ -211,6 +211,24 @@ window.compare = async (heights = [720, 1080], iters = 30) => {
   return results;
 };
 
+// Headless runner: ?auto runs everything and POSTs the result back, so this
+// page can be driven by a browser with no devtools attached.
+if (location.search.includes('auto')) {
+  (async () => {
+    const r = { started: new Date().toISOString() };
+    try {
+      r.cap = await window.probe();
+      r.fusion = await window.fusion([720, 1080], 20);
+      r.precision = await window.compare([720, 1080], 20);
+    } catch (e) {
+      r.error = String((e && e.stack) || (e && e.message) || e);
+    }
+    say(r);
+    try { await fetch('/result', { method: 'POST', body: JSON.stringify(r) }); } catch (e) {}
+    document.title = 'PROBE_DONE';
+  })();
+}
+
 document.getElementById('b').onclick = async () => {
   say('running...');
   try { say(await window.compare()); } catch (e) { say('ERROR ' + e.message); }
