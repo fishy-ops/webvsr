@@ -2,8 +2,9 @@
 <html><head><meta charset="utf-8"><title>WebVSR GPU probe</title></head>
 <body style="background:#111;color:#ddd;font-family:ui-monospace,monospace;padding:1rem">
 <h3>WebVSR capability + precision probe</h3>
-<pre id="out">click run, or call window.probe() / window.compare()</pre>
-<button id="b" style="font:inherit;padding:.4rem .8rem">run</button>
+<pre id="out">click a button, or call window.probe() / window.compare() / window.fusion()</pre>
+<button id="b" style="font:inherit;padding:.4rem .8rem">f16 vs f32</button>
+<button id="bf" style="font:inherit;padding:.4rem .8rem">fused vs unfused</button>
 <script>
 // What the engine can actually use on THIS gpu, and whether half precision is
 // worth enabling here. The shipped USE_F16=false came from a measurement on
@@ -31,18 +32,137 @@ window.probe = async () => {
   };
 };
 
-// Load a fresh copy of the engine with f16 forced on or off. Cache-busted and
-// re-evaluated each time, because USE_F16 is read once at module scope.
-const loadEngine = (f16, tag) => new Promise((res, rej) => {
+// Load a fresh copy of the engine, re-evaluated each time because USE_F16 and
+// FUSE_ATTN are read once at module scope.
+//
+// It must NOT be loaded with a <script> tag. The engine declares top-level
+// consts (MEAN, USE_F16, ...), so a second script throws "Identifier 'MEAN'
+// has already been declared", the reload silently does nothing, and every
+// comparison then measures the FIRST build twice -- reporting a ~1.0 speedup
+// and a 0-pixel difference no matter what the second build does. Evaluating
+// the source inside a fresh function scope gives each build its own bindings.
+const loadEngine = async (f16, tag) => {
   globalThis.__WEBVSR_FORCE_F16 = f16;
-  const s = document.createElement('script');
-  s.src = '../extension/webgpu-sr.js?probe=' + tag;
-  s.onload = () => res(); s.onerror = () => rej(new Error('engine load failed'));
-  document.head.appendChild(s);
-});
+  const src = await fetch('../extension/webgpu-sr.js?probe=' + tag).then((r) => {
+    if (!r.ok) throw new Error('engine fetch failed: ' + r.status);
+    return r.text();
+  });
+  const cls = new Function(src + '\nreturn WebGPUSR;')();
+  if (typeof cls !== 'function') throw new Error('engine did not yield WebGPUSR');
+  globalThis.WebGPUSR = cls;   // what the callers below construct
+  return cls;
+};
 
 // Median, not mean: gpu frame times are skewed by occasional long frames.
 const med = (xs) => { const s = [...xs].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+// A frame the engine will actually accept. importExternalTexture takes a
+// VideoFrame or HTMLVideoElement -- never an ImageBitmap -- and render() bails
+// at `!this.ctx` unless configure() has run, so an earlier version of this
+// probe timed a function that returned immediately.
+const makeFrame = (w, h) => {
+  const src = new OffscreenCanvas(w, h);
+  const cx = src.getContext('2d');
+  cx.fillStyle = '#456'; cx.fillRect(0, 0, w, h);
+  for (let k = 0; k < 400; k++) {                        // texture, so it is not
+    cx.fillStyle = `hsl(${k * 7},60%,${30 + (k % 40)}%)`; // a trivial flat frame
+    cx.fillRect((k * 37) % w, (k * 53) % h, 9, 9);
+  }
+  return new VideoFrame(src, { timestamp: 0 });
+};
+
+const setup = async (e, w, h, scale = 2) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = w * scale; canvas.height = h * scale;
+  e.configure(canvas, w, h, w * scale, h * scale);
+  return canvas;
+};
+
+// Pixels back off the rendered canvas, so two builds can be compared for
+// equality rather than only for speed.
+const snap = (canvas) => {
+  const c2 = document.createElement('canvas');
+  c2.width = canvas.width; c2.height = canvas.height;
+  c2.getContext('2d').drawImage(canvas, 0, 0);
+  return c2.getContext('2d').getImageData(0, 0, c2.width, c2.height).data;
+};
+
+const diff = (a, b) => {
+  if (a.length !== b.length) return { error: `size ${a.length} vs ${b.length}` };
+  let max = 0, sum = 0, n = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (i % 4 === 3) continue;                 // skip alpha
+    const d = Math.abs(a[i] - b[i]); if (d > max) max = d; sum += d; n++;
+  }
+  return { max_abs_diff: max, mean_abs_diff: +(sum / n).toFixed(5) };
+};
+
+// Fusing c3 with its attention should be numerically identical and strictly
+// cheaper. Both halves are checked: a speedup that changes the output is a bug,
+// not an optimisation.
+window.fusion = async (heights = [720, 1080], iters = 30) => {
+  const cap = await window.probe();
+  if (cap.error) return cap;
+  const out = { gpu: cap.gpu, runs: {}, passes: {}, equal: {} };
+  const pixels = {};
+
+  for (const fuse of [false, true]) {
+    const tag = fuse ? 'fused' : 'unfused';
+    try {
+      globalThis.__WEBVSR_FORCE_FUSE_ATTN = fuse;
+      await loadEngine(false, tag + '-' + Date.now());
+      const e = new WebGPUSR();
+      if (!await e.init()) { out.runs[tag] = { error: 'init failed' }; continue; }
+      await e.loadWeights('../extension/models/span_lite_2x_c16.bin');
+      const per = {};
+      for (const h of heights) {
+        const w = Math.round(h * 16 / 9) & ~1;
+        const canvas = await setup(e, w, h);
+        out.passes[tag] = e.passes.length + 2;      // + pre + shuffle
+        const frame = makeFrame(w, h);
+        for (let k = 0; k < 8; k++) e.render(frame);          // warmup: shader compile
+        await e.device.queue.onSubmittedWorkDone();
+        const ts = [];
+        for (let k = 0; k < iters; k++) {
+          const t0 = performance.now();
+          e.render(frame);
+          await e.device.queue.onSubmittedWorkDone();          // real GPU completion
+          ts.push(performance.now() - t0);
+        }
+        per[h + 'p'] = +med(ts).toFixed(3);
+        pixels[tag + h] = snap(canvas);
+        frame.close();
+      }
+      out.runs[tag] = per;
+    } catch (err) {
+      out.runs[tag] = { error: String(err && err.message || err) };
+    }
+  }
+  delete globalThis.__WEBVSR_FORCE_FUSE_ATTN;
+
+  // 22 passes unfused, 18 fused. Equal counts mean one build never loaded.
+  if (out.passes.fused === out.passes.unfused) {
+    out.error = `both builds report ${out.passes.fused} passes - the fused build `
+              + 'did not load, so these numbers compare one build with itself';
+    return out;
+  }
+
+  for (const h of heights) {
+    const a = pixels['unfused' + h], b = pixels['fused' + h];
+    if (a && b) out.equal[h + 'p'] = diff(a, b);
+  }
+  const u = out.runs.unfused, f = out.runs.fused;
+  if (u && f && !u.error && !f.error) {
+    out.speedup = Object.fromEntries(Object.keys(u).map(k => [k, +(u[k] / f[k]).toFixed(3)]));
+    const identical = Object.values(out.equal).every(d => d.max_abs_diff !== undefined && d.max_abs_diff <= 1);
+    out.verdict = !identical
+      ? 'OUTPUT DIFFERS - fusion is wrong, do not ship'
+      : (Object.values(out.speedup).every(v => v > 1.02)
+         ? 'fused is faster and output matches - ship it'
+         : 'output matches but no speedup here');
+  }
+  return out;
+};
 
 window.compare = async (heights = [720, 1080], iters = 30) => {
   const cap = await window.probe();
@@ -58,26 +178,22 @@ window.compare = async (heights = [720, 1080], iters = 30) => {
       // precision actually negotiated, not what we asked for
       const got = e.f16 ? 'f16' : 'f32';
       await e.loadWeights('../extension/models/span_lite_2x_c16.bin');
-      const canvas = document.createElement('canvas');
       const per = {};
       for (const h of heights) {
         const w = Math.round(h * 16 / 9) & ~1;
-        const src = new OffscreenCanvas(w, h);
-        const cx = src.getContext('2d');
-        cx.fillStyle = '#456'; cx.fillRect(0, 0, w, h);
-        for (let k = 0; k < 400; k++) {                 // texture, so it is not
-          cx.fillStyle = `hsl(${k * 7},60%,${30 + (k % 40)}%)`;  // a trivial flat frame
-          cx.fillRect((k * 37) % w, (k * 53) % h, 9, 9);
-        }
-        const bmp = src.transferToImageBitmap();
-        for (let k = 0; k < 8; k++) await e.render(bmp, canvas);   // warmup: shader compile
+        await setup(e, w, h);
+        const frame = makeFrame(w, h);
+        for (let k = 0; k < 8; k++) e.render(frame);           // warmup: shader compile
+        await e.device.queue.onSubmittedWorkDone();
         const ts = [];
         for (let k = 0; k < iters; k++) {
           const t0 = performance.now();
-          await e.render(bmp, canvas);
+          e.render(frame);
+          await e.device.queue.onSubmittedWorkDone();          // real GPU completion
           ts.push(performance.now() - t0);
         }
         per[h + 'p'] = +med(ts).toFixed(3);
+        frame.close();
       }
       results.runs[got] = per;
     } catch (err) {
@@ -98,6 +214,10 @@ window.compare = async (heights = [720, 1080], iters = 30) => {
 document.getElementById('b').onclick = async () => {
   say('running...');
   try { say(await window.compare()); } catch (e) { say('ERROR ' + e.message); }
+};
+document.getElementById('bf').onclick = async () => {
+  say('running...');
+  try { say(await window.fusion()); } catch (e) { say('ERROR ' + e.message); }
 };
 window.probe().then(say).catch(e => say('probe failed: ' + e.message));
 </script>

@@ -510,6 +510,83 @@ the model was never delivering the benchmark's gain in the first place.
 
 ---
 
+## 10. Fusion and f16, measured — §2a and §2b are no longer analytic
+
+Sections 2a and 2b were explicitly "the shape of the problem and a prediction to
+falsify". Both predictions have now been run on hardware, in a browser, on an
+**Apple M4 Pro (metal-3, `shader-f16` available)**, 1080p and 720p, 20 timed
+iterations each, timed to `queue.onSubmittedWorkDone()` rather than to submit.
+
+### Attention fusion: confirmed, and free
+
+`c3` and the attention that consumes it are now one pass (`convattn`). Dispatches
+per frame drop **22 → 18**.
+
+| | 720p | 1080p |
+|---|---|---|
+| unfused f32 | 33.2 ms | 73.2 ms |
+| fused f32 | 30.9 ms | 66.1 ms |
+| speedup | **1.074x** | **1.107x** |
+
+**Output is bit-identical: `max_abs_diff = 0` at both resolutions.** Same
+arithmetic, same order, one less DRAM round-trip. The gain is larger at 1080p,
+which is the direction §2a predicts: the more bandwidth-bound the workload, the
+more removing traffic is worth. §2a's estimate was 17% of *intermediate* traffic;
+10.7% end-to-end is consistent, since pre, shuffle, upsampler, finish and
+sharpen are untouched.
+
+Fusing c3 changes which scratch buffer each block lands in, so the pass list is
+re-planned rather than patched — naively fusing block 2 would have it read and
+write `sB` in a single pass. `convAttn()` throws if an output aliases an input.
+
+### f16: a large win here, but not for the predicted reason
+
+| | 720p | 1080p |
+|---|---|---|
+| fused f32 | 29.8 ms | 66.2 ms |
+| fused f16 | 21.4 ms | 48.0 ms |
+| speedup | **1.393x** | **1.379x** |
+
+Quality cost at 1080p: **`max_abs_diff` 1/255, mean 0.00315** — not perceptible.
+
+**The specific §2a prediction is not supported.** It said f16 should help at
+1080p *and not at 720p*, because raising `NEURAL_CAP` moved the workload across
+the roofline. f16 in fact helps slightly **more** at 720p (1.393 vs 1.379), i.e.
+uniformly. On Apple silicon f16 also doubles ALU throughput and halves register
+and cache pressure, so it pays whether or not DRAM bandwidth is saturated. The
+roofline argument explains the *fusion* result well and the *f16* result poorly.
+
+This does not overturn `USE_F16 = false`: that was measured on Turing, a
+different GPU, and is not retested here. What it establishes is that the default
+is wrong **for Apple silicon**, where f16 is the single largest efficiency win
+available.
+
+Stacked, on the M4 Pro at 1080p: **73.2 ms unfused f32 -> 48.0 ms fused f16, a
+1.525x speedup** for zero perceptible quality change.
+
+### The tooling was broken, and any earlier number from it is void
+
+`dev/gpu_probe.html` could not have produced a valid measurement. Three
+independent faults, all now fixed:
+
+1. **It never called `configure()`**, so `render()` returned at its `!this.ctx`
+   guard. It was timing a function that did nothing.
+2. **It passed an `ImageBitmap` to `importExternalTexture`**, which accepts only
+   a `VideoFrame` or `HTMLVideoElement`.
+3. **It reloaded the engine with a `<script>` tag.** The engine declares
+   top-level consts, so the second load threw `Identifier 'MEAN' has already
+   been declared`, the reload silently did nothing, and the comparison measured
+   the *first* build twice. Observed directly: the first fusion run reported 22
+   passes for both builds, a 1.0 speedup and a 0-pixel difference — a perfect
+   null result produced by comparing a build with itself.
+
+Fault 3 is the dangerous one, because it fails as a *plausible* answer rather
+than an error. The probe now loads the engine by evaluating its source in a
+fresh function scope, and `window.fusion()` refuses to report at all when both
+builds return the same pass count.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
