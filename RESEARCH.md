@@ -301,6 +301,60 @@ crop.** Everything the network sees is on the LR side.
 
 ---
 
+## 6a. The crop-size retry is invalid: the dataset cannot supply a 512px crop
+
+The retry ran to completion (`ckpt_c16x4_crop512`, 60 epochs, phase-1 best
+26.43 dB) and again lost to the shipped model:
+
+| CRF | texture PSNR | DISTS | tLP | texture sharpness |
+|-----|--------------|-------|-----|-------------------|
+| 20 | 20.283 -> 20.100 | 0.1922 -> 0.1915 | -0.00749 -> -0.00740 | 0.6064 -> 0.5829 |
+| 28 | 19.758 -> 19.599 | 0.2109 -> 0.2113 | -0.00902 -> -0.00917 | 0.5852 -> 0.5522 |
+| 36 | 18.529 -> 18.508 | 0.2419 -> 0.2426 | -0.01421 -> -0.01526 | 0.5200 -> 0.4915 |
+
+**This does not falsify the hypothesis in §6 — the experiment never tested it.**
+
+Every training frame is Vimeo-90K at **448x256** (10,000 frames, `data/vimeo_frames`).
+`random_crop` (`training/dataset.py:19`) upscales any frame smaller than the
+requested crop rather than refusing it:
+
+```python
+w, h = img.size                              # 448 x 256
+if w < crop_size or h < crop_size:           # 448 < 512 -> True
+    img = img.resize((max(w, crop_size), max(h, crop_size)), Image.BICUBIC)
+```
+
+So `--crop-size 512` bicubically stretched every frame to 512x512 — **1.14x on x,
+2.00x on y** — and used that as the HR *target*. The run trained a
+super-resolution model to reproduce bicubic upsampling, on geometrically
+distorted frames.
+
+The measured artifact is precisely what that bug predicts: crop512 is blurrier
+than shipped at every CRF, because bicubic blur is what its targets contained.
+Its DISTS/tLP wins at CRF 20 are 0.0007 and 0.0001 — noise.
+
+**The real constraint is the dataset ceiling: max usable crop = min(448, 256) = 256 HR px.**
+
+| scale | HR crop needed for LR 128 | available from Vimeo-90K |
+|---|---|---|
+| 2x | 256 | yes — this is why the 2x run worked |
+| 4x | 512 | **no** |
+
+The shipped 2x recipe sits exactly on that ceiling by luck, not design. The 4x
+LR-crop hypothesis remains **untested and still plausible**; testing it needs
+source frames of at least 512x512.
+
+**Consequences:**
+1. `random_crop` must raise on an oversized crop instead of silently
+   fabricating HR detail. A trainer that invents its own targets from bicubic
+   can only teach blur, and it does so without a single warning in the log.
+2. **Training data must be re-sourced at >=512px before any further 4x recipe
+   work.** Vimeo-90K cannot express the experiment, and it also caps the busy-scene
+   work in §3a: 448x256 frames carry little of the dense high-frequency texture
+   that the slope problem is about.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via

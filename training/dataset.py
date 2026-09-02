@@ -14,13 +14,22 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def random_crop(img, crop_size):
-    """Random crop from a PIL Image, returns PIL Image."""
+    """Random crop from a PIL Image, returns PIL Image.
+
+    Refuses a crop larger than the source. Upscaling the frame to satisfy the
+    crop would make the HR *target* a bicubic upsample of itself, which trains
+    the model to reproduce blur -- silently, since the loss still falls. That
+    is what invalidated the 4x crop-512 run (see RESEARCH.md 6a); Vimeo-90K is
+    448x256, so 256 is the ceiling.
+    """
     w, h = img.size
     if w < crop_size or h < crop_size:
-        img = img.resize(
-            (max(w, crop_size), max(h, crop_size)), Image.BICUBIC
+        raise ValueError(
+            f"crop_size {crop_size} exceeds source frame {w}x{h}; max usable "
+            f"crop is {min(w, h)}. Upscaling here would fabricate HR detail "
+            f"and teach the model bicubic blur. Use a larger-resolution "
+            f"dataset instead of a larger crop."
         )
-        w, h = img.size
     left = random.randint(0, w - crop_size)
     top = random.randint(0, h - crop_size)
     return img.crop((left, top, left + crop_size, top + crop_size))
