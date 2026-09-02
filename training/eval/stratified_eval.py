@@ -74,6 +74,29 @@ def make_pair(clip, workdir, scale, crf, frames, height):
 
     # HR reference: scale to an even multiple of `scale` so SR output aligns.
     h = (height // (2 * scale)) * (2 * scale)
+
+    # Refuse to enlarge. Scaling a 1038-tall source up to 1080 makes the HR
+    # *reference* an interpolation, which holds no detail the model has to
+    # recover and so inflates any model's apparent win: measured at +1.4 dB for
+    # the three 1038-tall clips against <=+0.46 for every native-1080 clip.
+    # Same failure as RESEARCH.md 6a, on the evaluation side.
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=height", "-of", "csv=p=0", str(clip)],
+        capture_output=True, text=True,
+    )
+    try:
+        src_h = int(probe.stdout.strip().split(",")[0])
+    except (ValueError, IndexError):
+        src_h = None
+    if src_h is not None and h > src_h:
+        raise ValueError(
+            f"{Path(clip).name} is {src_h}px tall but --height asks for {h}. "
+            f"Upscaling the HR reference makes it an interpolation and inflates "
+            f"the measured gain. Pass --height {(src_h // (2 * scale)) * (2 * scale)} "
+            f"or lower."
+        )
+
     vf_hr = f"scale=-2:{h}:flags=lanczos"
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-i", str(clip),
