@@ -44,6 +44,30 @@ def busyness(hr, hi):
     return float((grad_mag(hr) >= hi).float().mean())
 
 
+def profile(clips, args, device):
+    """Per-clip busyness, using the same global thresholds as the full eval."""
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as td:
+        pairs = []
+        for clip in clips:
+            hr_paths, _ = make_pair(clip, Path(td) / clip.stem, args.scale,
+                                    args.crf, args.frames, args.height)
+            pairs.append((clip.stem, hr_paths))
+        all_hr = [p for _, hrs in pairs for p in hrs]
+        lo, hi = bucket_thresholds(all_hr, device)
+        print(f"\ngradient thresholds: flat<{lo:.4f} edge<{hi:.4f} texture>={hi:.4f}\n")
+        print(f"{'clip':<28} {'n':>3} {'busy min':>9} {'busy max':>9} {'mean':>8}")
+        print("-" * 60)
+        stats = []
+        for stem, hr_paths in pairs:
+            b = [busyness(load(p, device), hi) for p in hr_paths]
+            stats.append((stem, b))
+            print(f"{stem:<28} {len(b):>3} {min(b):9.3f} {max(b):9.3f} {np.mean(b):8.3f}")
+        allb = np.concatenate([b for _, b in stats])
+        print(f"\noverall range {allb.min():.3f} - {allb.max():.3f}; "
+              f"deciles: {np.round(np.quantile(allb, np.linspace(0,1,11)), 3).tolist()}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -58,6 +82,11 @@ def main():
     ap.add_argument("--bins", type=int, default=5)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--json")
+    # Answering "does this clip set span busyness?" needs no model, and asking
+    # it first is what keeps a confounded set (RESEARCH.md 7) from being
+    # discovered only after a full evaluation has been paid for.
+    ap.add_argument("--profile", action="store_true",
+                    help="report per-clip busyness only; runs no model")
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -65,6 +94,10 @@ def main():
              if p.suffix.lower() in VIDEO_EXT]
     if not clips:
         sys.exit(f"no video files in {args.clips}")
+
+    if args.profile:
+        profile(clips, args, device)
+        return
 
     models = {}
     for spec in args.model:
