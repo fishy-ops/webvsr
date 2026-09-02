@@ -80,6 +80,50 @@ not the efficiency answer for this size of network.**
 
 ---
 
+## 2a. How bandwidth-bound this engine actually is
+
+Counted from the pass graph in `webgpu-sr.js` (`this.passes`): 17 conv-like
+passes each reading and writing a full C-channel feature buffer, plus 4
+attention passes reading two and writing one. At C=16 and f32 a single feature
+buffer is `16 * px * 4` bytes, and nothing close to it fits in L2 (59 MB at
+720p against 4 MB of L2 on a 2070 SUPER), so this traffic really does reach
+DRAM.
+
+| Neural input | One buffer | Intermediate traffic / frame | At 60 fps |
+|---|---|---|---|
+| 720p | 59 MB | 2,713 MB | **163 GB/s** |
+| 1080p | 133 MB | 6,105 MB | **366 GB/s** |
+
+Against 448 GB/s on the RTX 2070 SUPER and 273 GB/s unified on an M4 Pro.
+
+**This changes the f16 decision.** `USE_F16 = false` records that scalar f16 was
+no faster than f32 -- but that was measured at 720p, which is 36% of the 2070
+SUPER's peak bandwidth and therefore not bandwidth-bound; halving the bytes of
+a workload with bandwidth to spare buys nothing.
+
+`NEURAL_CAP` is now 1080. At 1080p the same engine sits at **82% of peak on the
+same GPU**, and *above* the M4 Pro's total bandwidth. f16 halves every one of
+those bytes.
+
+> Testable prediction: f16 should now help at 1080p on the very GPU where it did
+> not help at 720p, because raising the cap moved the workload across the
+> roofline. `dev/gpu_probe.html` measures both resolutions and both precisions.
+> If this is wrong, the roofline reasoning is wrong and should be recorded as
+> such.
+
+**Fusing the attention passes** -- SPANV2's exact optimisation, and here the
+`attn` pass is already the add-and-multiply -- removes each block's write of
+`out3` and the attention's read back of it: 2 buffers per block across 4
+blocks, **17% of all intermediate traffic**, independent of precision. It
+composes with f16 rather than competing.
+
+Caveats: these are analytic figures, not measurements. They ignore weight
+traffic (133 KB, cached) and assume no cache reuse between passes, which is
+close to true at these buffer sizes but not exactly true. Treat them as the
+shape of the problem and as a prediction to falsify, not as a benchmark.
+
+---
+
 ## 3. If an "advanced mode" is ever built
 
 For users with compute to spare, the evidence points at transformers, not at a
