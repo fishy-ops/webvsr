@@ -232,6 +232,9 @@ def load_model(ckpt, channels, scale, device, arch="span"):
     if arch == "unshuffle":
         from model_span_unshuffle import SPANLiteUnshuffle
         model = SPANLiteUnshuffle(feature_channels=channels, upscale=scale)
+    elif arch == "spanv2":
+        from model_span_v2 import SPANLiteV2
+        model = SPANLiteV2(feature_channels=channels, upscale=scale)
     else:
         model = SPANLite(feature_channels=channels, upscale=scale)
     blob = torch.load(ckpt, map_location="cpu", weights_only=False)

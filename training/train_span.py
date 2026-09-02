@@ -169,7 +169,8 @@ def train():
     parser.add_argument("--w-perceptual", type=float, default=None)
     # "unshuffle" runs the trunk at half resolution via PixelUnshuffle(2),
     # ~4x fewer spatial positions for the same channel count.
-    parser.add_argument("--arch", choices=["span", "unshuffle"], default="span")
+    parser.add_argument("--arch", choices=["span", "unshuffle", "spanv2"],
+                        default="span")
     parser.add_argument("--init-from", default=None,
                         help="load model weights from this checkpoint and start "
                              "fresh (no optimizer or epoch state) -- for adapting "
@@ -212,6 +213,8 @@ def train():
     # ── Model ───────────────────────────────────────────────────────
     if args.arch == "unshuffle":
         from model_span_unshuffle import SPANLiteUnshuffle as _Arch
+    elif args.arch == "spanv2":
+        from model_span_v2 import SPANLiteV2 as _Arch
     else:
         _Arch = SPANLite
     model = _Arch(
