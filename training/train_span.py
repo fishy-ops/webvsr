@@ -175,8 +175,22 @@ def train():
     parser.add_argument("--w-perceptual", type=float, default=None)
     # "unshuffle" runs the trunk at half resolution via PixelUnshuffle(2),
     # ~4x fewer spatial positions for the same channel count.
-    parser.add_argument("--arch", choices=["span", "unshuffle", "spanv2"],
+    parser.add_argument("--arch", choices=["span", "unshuffle", "spanv2", "spanme"],
                         default="span")
+    # spanme: shared trunk, one small head per exit depth. Trains every exit
+    # jointly in a single trunk pass, so the deep exit is not degraded by the
+    # shallow one competing for the same head.
+    parser.add_argument("--exit-depths", default="2,4",
+                        help="spanme only: comma-separated block depths to train exits at")
+    parser.add_argument("--aux-weight", type=float, default=0.5,
+                        help="spanme only: weight on each non-deepest exit's loss")
+    # The early-exit heads start random while the trunk is already converged,
+    # so joint training from epoch 0 lets their gradients degrade the deep
+    # exit -- measured as 37.37 -> 35.91 dB across one epoch. Train the new
+    # heads against a frozen trunk first, then unfreeze.
+    parser.add_argument("--freeze-trunk-epochs", type=int, default=0,
+                        help="spanme only: epochs to train early-exit heads with "
+                             "the trunk and deepest head frozen")
     parser.add_argument("--init-from", default=None,
                         help="load model weights from this checkpoint and start "
                              "fresh (no optimizer or epoch state) -- for adapting "
@@ -227,12 +241,21 @@ def train():
         from model_span_unshuffle import SPANLiteUnshuffle as _Arch
     elif args.arch == "spanv2":
         from model_span_v2 import SPANLiteV2 as _Arch
+    elif args.arch == "spanme":
+        from model_span_me import SPANLiteME as _Arch
     else:
         _Arch = SPANLite
+    _kw = {}
+    if args.arch == "spanme":
+        _kw["exit_depths"] = tuple(int(d) for d in args.exit_depths.split(","))
     model = _Arch(
         upscale=cfg["scale"],
         feature_channels=cfg["feature_channels"],
+        **_kw,
     ).to(device)
+    multi_exit = args.arch == "spanme"
+    if multi_exit:
+        print(f"multi-exit depths {model.exit_depths}, aux weight {args.aux_weight}")
     print(f"SPAN-Lite: {count_params(model):,} trainable parameters")
 
     # ── Data ────────────────────────────────────────────────────────
@@ -317,9 +340,16 @@ def train():
     if args.init_from:
         blob = torch.load(args.init_from, map_location="cpu", weights_only=False)
         state = blob.get("model", blob.get("model_state_dict", blob))
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(f"init-from {args.init_from}: "
-              f"{len(missing)} missing, {len(unexpected)} unexpected tensors")
+        if multi_exit and any(k.startswith("block_") for k in state):
+            # A plain SPANLite checkpoint: key names differ, so remap rather
+            # than silently dropping the whole trunk via strict=False.
+            loaded, n_missing = model.load_span_lite(state)
+            print(f"init-from {args.init_from}: remapped {loaded} SPANLite tensors, "
+                  f"{n_missing} left at init (early-exit heads)")
+        else:
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            print(f"init-from {args.init_from}: "
+                  f"{len(missing)} missing, {len(unexpected)} unexpected tensors")
         start_epoch, best_psnr, current_phase = 0, 0, 1
 
     print(f"\nStarting training from epoch {start_epoch}, phase {current_phase}")
@@ -348,25 +378,54 @@ def train():
         batch_count = 0
         t0 = time.time()
 
+        if multi_exit and args.freeze_trunk_epochs > 0:
+            frozen = epoch < args.freeze_trunk_epochs
+            full_key = model._key(model.max_depth)
+            for name, prm in model.named_parameters():
+                is_early_head = (
+                    name.startswith(("conv_cat.", "conv_last.", "upsampler."))
+                    and f".{full_key}." not in name
+                )
+                prm.requires_grad_(is_early_head if frozen else True)
+            if epoch in (0, args.freeze_trunk_epochs):
+                n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                print(f"  [multi-exit] trunk {'FROZEN' if frozen else 'unfrozen'}: "
+                      f"{n_train:,} trainable params")
+
         optimizer.zero_grad()
 
         for batch_idx, (lr, hr) in enumerate(train_loader):
             lr, hr = lr.to(device, non_blocking=True), hr.to(device, non_blocking=True)
 
             with autocast(device_type="cuda", dtype=torch.float16):
-                sr = model(lr)
-                sr = sr.clamp(0, 1)
-                if sr.shape != hr.shape:
-                    sr = F.interpolate(sr, size=hr.shape[2:], mode="bicubic",
-                                       align_corners=False).clamp(0, 1)
-                loss, components = criterion(sr, hr)
+                if multi_exit:
+                    outs = model.forward_all_exits(lr)
+                    loss = 0.0
+                    for d, sr_d in outs.items():
+                        sr_d = sr_d.clamp(0, 1)
+                        if sr_d.shape != hr.shape:
+                            sr_d = F.interpolate(sr_d, size=hr.shape[2:], mode="bicubic",
+                                                 align_corners=False).clamp(0, 1)
+                        l_d, comp_d = criterion(sr_d, hr)
+                        w = 1.0 if d == model.max_depth else args.aux_weight
+                        loss = loss + w * l_d
+                        if d == model.max_depth:
+                            sr, components = sr_d, comp_d
+                else:
+                    sr = model(lr)
+                    sr = sr.clamp(0, 1)
+                    if sr.shape != hr.shape:
+                        sr = F.interpolate(sr, size=hr.shape[2:], mode="bicubic",
+                                           align_corners=False).clamp(0, 1)
+                    loss, components = criterion(sr, hr)
                 loss = loss / cfg["accumulation_steps"]
 
             scaler.scale(loss).backward()
 
             if (batch_idx + 1) % cfg["accumulation_steps"] == 0:
                 scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                nn.utils.clip_grad_norm_(
+                    [p for p in model.parameters() if p.requires_grad], 1.0)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
