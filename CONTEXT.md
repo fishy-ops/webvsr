@@ -292,8 +292,7 @@ buckets before shipping a checkpoint.
   has no browser and no display.
 
 The 4x model (`span_lite_4x_c16.bin`) is still from the old JPEG-degraded
-recipe; only the 2x default has been retrained. `span_lite_2x_c16p2.bin` is
-in the package but referenced by no code.
+recipe; only the 2x default has been retrained.
 
 ---
 
