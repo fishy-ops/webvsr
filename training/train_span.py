@@ -95,7 +95,16 @@ def _make_dists(device):
         return None
 
 
-def validate(model, val_loader, device, dists_fn=None):
+def validate(model, val_loader, device, dists_fn=None, depth=None):
+    """Validate one exit. `depth` selects it on a multi-exit model.
+
+    Without this the loop scores `model(lr)`, which defaults to the deepest
+    exit -- so on a multi-exit run the early heads are invisible to checkpoint
+    selection. A run initialised from a converged checkpoint then picks epoch 0
+    as "best", because the deep exit is already perfect there while the early
+    heads are still at random init, and the saved checkpoint contains a garbage
+    early exit (measured: 8.6 dB against the deep exit's 37.4).
+    """
     model.eval()
     total_psnr = 0
     total_dists = 0.0
@@ -103,7 +112,7 @@ def validate(model, val_loader, device, dists_fn=None):
     with torch.no_grad(), autocast(device_type="cuda", dtype=torch.float16):
         for lr, hr in val_loader:
             lr, hr = lr.to(device), hr.to(device)
-            sr = model(lr)
+            sr = model(lr) if depth is None else model(lr, depth=depth)
             sr = sr.clamp(0, 1)
             if sr.shape != hr.shape:
                 sr = F.interpolate(sr, size=hr.shape[2:], mode="bicubic",
@@ -464,7 +473,19 @@ def train():
         val_psnr = 0
         val_dists = None
         if epoch % 5 == 0 or epoch == cfg["phase1_epochs"] - 1 or epoch == cfg["total_epochs"] - 1:
-            val_psnr, val_dists = validate(model, val_loader, device, dists_fn)
+            if multi_exit:
+                # Score every exit and select on the WORST of them. A multi-exit
+                # checkpoint is only as useful as its weakest head, and selecting
+                # on the deepest one alone saves epoch 0 with a random early exit.
+                per_exit = {}
+                for d_ in model.exit_depths:
+                    per_exit[d_] = validate(model, val_loader, device, dists_fn, depth=d_)
+                val_psnr = min(v[0] for v in per_exit.values())
+                val_dists = max(v[1] for v in per_exit.values())
+                print("      exits: " + "  ".join(
+                    f"d{d_}: {v[0]:.2f}dB/{v[1]:.4f}" for d_, v in sorted(per_exit.items())))
+            else:
+                val_psnr, val_dists = validate(model, val_loader, device, dists_fn)
 
         # Logging
         lr_now = optimizer.param_groups[0]["lr"]
