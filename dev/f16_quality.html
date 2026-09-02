@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>WebVSR f16 quality check</title></head>
+<body style="background:#111;color:#ddd;font-family:ui-monospace,monospace;padding:1rem">
+<h3>f16 vs f32 on real codec-degraded video</h3>
+<pre id="out">click run, or call window.quality()</pre>
+<button id="b" style="font:inherit;padding:.4rem .8rem">run</button>
+<script>
+// The synthetic-frame check said f16 costs 1/255. That frame was flat colour
+// and 9px squares. This asks the question that actually decides shipping: on
+// real frames put through a real x264 encode, does f16 lose anything measured
+// against the ground truth -- not merely against f32?
+const OUT = document.getElementById('out');
+const say = (o) => OUT.textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 1);
+
+// Fresh function scope per build: the engine's top-level consts collide if it
+// is loaded twice with a <script> tag, and the reload then silently no-ops.
+const loadEngine = async (f16, tag) => {
+  globalThis.__WEBVSR_FORCE_F16 = f16;
+  const src = await fetch('../extension/webgpu-sr.js?q=' + tag).then((r) => {
+    if (!r.ok) throw new Error('engine fetch failed ' + r.status);
+    return r.text();
+  });
+  return new Function(src + '\nreturn WebGPUSR;')();
+};
+
+// createImageBitmap, not Image.decode(): decode() reported EncodingError on
+// these PNGs while the bitmap path handles them fine.
+const loadImg = async (url) => {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`fetch ${url} -> ${r.status}`);
+  const bmp = await createImageBitmap(await r.blob());
+  const c = document.createElement('canvas');
+  c.width = bmp.width; c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0);
+  bmp.close();
+  return c;
+};
+
+const pixelsOf = (canvasLike) => {
+  const c = document.createElement('canvas');
+  c.width = canvasLike.width; c.height = canvasLike.height;
+  const g = c.getContext('2d');
+  g.drawImage(canvasLike, 0, 0);
+  return g.getImageData(0, 0, c.width, c.height).data;
+};
+
+// PSNR over RGB only; alpha is constant and would inflate it.
+const psnr = (a, b) => {
+  let se = 0, n = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (i % 4 === 3) continue;
+    const d = a[i] - b[i]; se += d * d; n++;
+  }
+  const mse = se / n;
+  return mse === 0 ? Infinity : +(10 * Math.log10(255 * 255 / mse)).toFixed(4);
+};
+
+const diff = (a, b) => {
+  let max = 0, sum = 0, n = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (i % 4 === 3) continue;
+    const d = Math.abs(a[i] - b[i]); if (d > max) max = d; sum += d; n++;
+  }
+  return { max: max, mean: +(sum / n).toFixed(5) };
+};
+
+window.quality = async () => {
+  window.__step = 'manifest';
+  const man = await fetch('../f16set/manifest.json').then(r => r.json());
+  const byClip = {};
+  for (const m of man) (byClip[m.clip] = byClip[m.clip] || []).push(m);
+
+  const res = {};   // res[precision][key] = pixels
+  const timing = {};
+  for (const f16 of [false, true]) {
+    const tag = f16 ? 'f16' : 'f32';
+    const Cls = await loadEngine(f16, tag + '-' + Date.now());
+    const e = new Cls();
+    if (!await e.init()) throw new Error(tag + ': init failed');
+    if (e.f16 !== f16) throw new Error(`${tag}: engine negotiated f16=${e.f16}, asked ${f16}`);
+    await e.loadWeights('../extension/models/span_lite_2x_c16.bin');
+    res[tag] = {};
+    const t0 = performance.now();
+    for (const clip of Object.keys(byClip)) {
+      let canvas = null;
+      for (const m of byClip[clip]) {
+        window.__step = 'loadLR ' + m.lr;
+        const lr = await loadImg('../f16set/' + m.lr);
+        if (!canvas) {
+          canvas = document.createElement('canvas');
+          canvas.width = lr.width * 2; canvas.height = lr.height * 2;
+          e.configure(canvas, lr.width, lr.height, lr.width * 2, lr.height * 2);
+        }
+        window.__step = 'VideoFrame ' + m.lr;
+        const frame = new VideoFrame(lr, { timestamp: 0 });
+        e.render(frame);
+        await e.device.queue.onSubmittedWorkDone();
+        frame.close();
+        res[tag][m.lr] = pixelsOf(canvas);
+      }
+    }
+    timing[tag] = +(performance.now() - t0).toFixed(1);
+  }
+  delete globalThis.__WEBVSR_FORCE_F16;
+
+  const rows = [];
+  for (const m of man) {
+    window.__step = 'loadHR ' + m.hr;
+    const hr = pixelsOf(await loadImg('../f16set/' + m.hr));
+    const a = res.f32[m.lr], b = res.f16[m.lr];
+    if (!a || !b || a.length !== hr.length) { rows.push({ clip: m.clip, error: 'size mismatch' }); continue; }
+    rows.push({
+      clip: m.clip,
+      psnr_f32: psnr(a, hr),
+      psnr_f16: psnr(b, hr),
+      f16_vs_f32: diff(a, b),
+    });
+  }
+
+  const clips = {};
+  for (const r of rows) {
+    if (r.error) continue;
+    const c = (clips[r.clip] = clips[r.clip] || { n: 0, f32: 0, f16: 0, max: 0 });
+    c.n++; c.f32 += r.psnr_f32; c.f16 += r.psnr_f16;
+    c.max = Math.max(c.max, r.f16_vs_f32.max);
+  }
+  const summary = {};
+  let dsum = 0, dn = 0, worst = 0;
+  for (const [c, v] of Object.entries(clips)) {
+    const f32 = v.f32 / v.n, f16 = v.f16 / v.n;
+    summary[c] = { psnr_f32: +f32.toFixed(4), psnr_f16: +f16.toFixed(4),
+                   delta_dB: +(f16 - f32).toFixed(4), max_pixel_diff: v.max };
+    dsum += (f16 - f32); dn++; worst = Math.max(worst, v.max);
+  }
+  const mean_delta = dsum / dn;
+  return {
+    frames: rows.length,
+    per_clip: summary,
+    mean_psnr_delta_dB: +mean_delta.toFixed(4),
+    worst_pixel_diff: worst,
+    render_ms_all_frames: timing,
+    verdict: Math.abs(mean_delta) < 0.05 && worst <= 3
+      ? 'f16 is quality-neutral on real video - safe to enable'
+      : (mean_delta < -0.05
+         ? 'f16 costs measurable quality - do not enable blindly'
+         : 'inconclusive - inspect per-clip'),
+  };
+};
+
+// Auto-run and publish to the DOM: driving this over CDP evaluate proved
+// flaky, and a single navigate + one DOM read is far more reliable.
+const run = async () => {
+  say('running...');
+  window.__done = false;
+  try {
+    const r = await window.quality();
+    window.__result = r; say(r);
+  } catch (e) {
+    window.__result = { error: String((e && e.name) || '') + ': ' + String((e && e.message) || e),
+                        step: window.__step || 'unknown' };
+    say(window.__result);
+  }
+  window.__done = true;
+};
+document.getElementById('b').onclick = run;
+if (location.search.includes('auto')) run();
+</script>
+</body></html>
