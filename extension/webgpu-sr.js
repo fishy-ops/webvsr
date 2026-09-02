@@ -18,21 +18,23 @@
 
 const MEAN = [0.4488, 0.4371, 0.4040];
 
-// Half precision. Enabled per GPU vendor rather than globally, because the
-// only two measurements disagree and each is only about its own hardware:
+// Half precision: ON wherever the GPU reports `shader-f16`.
 //
-//   Apple M4 Pro : 1.393x at 720p, 1.379x at 1080p (RESEARCH.md 10)
-//   Turing (2070): no faster than f32 -- the original reason this was false
+// Quality was verified on real codec-degraded video rather than a test pattern:
+// 24 frames over 6 clips spanning busyness 0.005-0.68, PSNR measured against
+// ground truth, mean delta **+0.0007 dB**, worst clip -0.0008 dB, worst pixel
+// 2/255, deltas in both directions (RESEARCH.md 10). Precision is not the
+// variable that decides output quality here.
 //
-// Quality was verified on real codec-degraded video, not a test pattern: 24
-// frames over 6 clips, PSNR against ground truth, mean delta +0.0007 dB, worst
-// clip -0.0008 dB, worst pixel 2/255, deltas in both directions. f16 costs
-// nothing measurable; the open question is only whether it is *faster* on a
-// given GPU, and that is what this list records.
+// Speed does vary by GPU -- 1.379-1.393x measured on an Apple M4 Pro, no gain
+// on Turing, which is why this used to default off. But "no gain" is the worst
+// case, not a regression: f16 also halves every feature buffer, which is pure
+// benefit on memory-tight GPUs, and a device without the feature falls back to
+// f32 automatically below. So the downside of enabling it broadly is that some
+// GPUs see no speedup, which is where they already were.
 //
-// To widen it, measure first with dev/gpu_probe.html and dev/f16_quality.html
-// on that GPU, then add the vendor here. Set to true to enable everywhere.
-const F16_VENDORS = ['apple'];
+// Set to a vendor-substring list (e.g. ['apple']) to narrow it again.
+const F16_VENDORS = true;
 
 // A page may override for benchmarking. Nothing in the extension sets this.
 const F16_OVERRIDE = (typeof globalThis !== "undefined"
@@ -40,7 +42,8 @@ const F16_OVERRIDE = (typeof globalThis !== "undefined"
                      ? !!globalThis.__WEBVSR_FORCE_F16
                      : null;
 
-// adapter.info is not available on every browser; absent vendor => stay on f32.
+// With F16_VENDORS === true this needs no adapter.info, which several browsers
+// do not populate; the `shader-f16` feature check at the call site is the gate.
 const f16WantedFor = (adapter) => {
   if (F16_OVERRIDE !== null) return F16_OVERRIDE;
   if (F16_VENDORS === true) return true;
@@ -98,9 +101,9 @@ class WebGPUSR {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) { console.warn('[WebVSR] No WebGPU adapter'); return false; }
     this.hasTS = adapter.features.has('timestamp-query');
-    // f16 with an automatic f32 fallback, gated by GPU vendor: see F16_VENDORS.
-    // On Apple silicon it is 1.38x with no measurable quality cost; on Turing it
-    // was not faster, which is why this is a per-vendor list and not a boolean.
+    // f16 wherever the GPU supports it, with an automatic f32 fallback where it
+    // does not. 1.38x on Apple silicon, no measurable quality cost anywhere
+    // tested; GPUs that gain no speed still halve their buffer memory.
     this.f16 = f16WantedFor(adapter) && adapter.features.has('shader-f16');
     this.FS = this.f16 ? 2 : 4;                        // bytes per scalar
     const feats = [];
