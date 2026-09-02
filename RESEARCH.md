@@ -582,11 +582,23 @@ different GPU, and is not retested here. What it establishes is that the default
 is wrong **for Apple silicon**, where f16 is the single largest efficiency win
 available — 1.38x for a quality change of 0.0007 dB.
 
-**The evidence supports gating f16 on the adapter, not flipping it globally.**
-`adapter.info.vendor === 'apple'` is the population actually measured. Turing
-remains untested, and the one existing datapoint there says f16 bought nothing;
-enabling it everywhere would be extrapolating from one GPU family to all of
-them.
+**Shipped enabled wherever `shader-f16` is reported.** The narrower option was
+to gate on `adapter.info.vendor`, since Apple is the only family measured. That
+was rejected on the asymmetry of the risk:
+
+- **Quality does not depend on the precision.** That is measured, on real video,
+  against ground truth — +0.0007 dB. It is not a per-GPU question.
+- **Speed does vary**, 1.38x on Apple against no gain on Turing. But "no gain"
+  leaves a GPU exactly where it already was; it is not a regression.
+- **Memory always halves**, every feature buffer, which is pure benefit on the
+  memory-tight GPUs most likely to be running this.
+- A device without the feature takes the existing f32 path. Verified by
+  intercepting `requestAdapter` to hide `shader-f16`: the engine initialises at
+  4 bytes/scalar and renders a full frame correctly.
+
+Turing remains unmeasured under the new default — the box that has one runs
+headless with no WebGPU-capable browser. `F16_VENDORS` can be set back to a
+vendor-substring list if a GPU is ever found where f16 is actively slower.
 
 Stacked, on the M4 Pro at 1080p: **73.2 ms unfused f32 -> 48.0 ms fused f16, a
 1.525x speedup** for zero perceptible quality change.
