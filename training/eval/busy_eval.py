@@ -102,8 +102,15 @@ def main():
     models = {}
     for spec in args.model:
         name, rest = spec.split("=", 1)
-        ckpt, ch, sc = rest.rsplit(":", 2)
-        models[name] = load_model(ckpt, int(ch), int(sc), device, arch=args.arch)
+        parts = rest.rsplit(":", 3)
+        # NAME=CKPT:CH:SCALE, or NAME=CKPT:CH:SCALE:DEPTH for a multi-exit model.
+        if len(parts) == 4 and parts[3].isdigit() and parts[2].isdigit():
+            ckpt, ch, sc, dep = parts[0], parts[1], parts[2], int(parts[3])
+        else:
+            ckpt, ch, sc = rest.rsplit(":", 2)
+            dep = None
+        models[name] = load_model(ckpt, int(ch), int(sc), device,
+                                  arch=args.arch, depth=dep)
     if not models:
         sys.exit("pass at least one --model")
 
