@@ -124,6 +124,37 @@ shape of the problem and as a prediction to falsify, not as a benchmark.
 
 ---
 
+## 2b. WebGPU-specific evidence for fusion, and a dispatch-count cost
+
+A study of WebGPU inference overhead (arXiv:2604.02344) measures what the
+browser layer itself costs, which no SR paper covers:
+
+- Per-dispatch API overhead: **24-36 us on Vulkan, 32-71 us on Metal.**
+- **Kernel fusion improved throughput by 53%** on Vulkan in their WebGPU
+  context. CUDA-style fusion gave no benefit there, so the win is specific to
+  reducing WebGPU dispatches, not to fusion in the abstract.
+- At batch size 1, per-operation overhead dominates *regardless of kernel
+  quality*. This engine is effectively batch size 1.
+- A reference WebGPU implementation reached 11-12% of CUDA performance. Useful
+  for calibrating expectations about any browser-side number.
+
+This engine issues **22 dispatches per frame** (pre, 20 in `this.passes`,
+shuffle). On Metal that is 0.7-1.6 ms of pure API overhead against a 21.8 ms
+720p budget -- not dominant, but not nothing, and it falls as passes are fused.
+
+**Three independent lines now point at fusion**: the traffic count in section
+2a (17% of intermediate bytes), SPANV2's fused CUDA kernel winning the NTIRE
+runtime track, and a measured 53% from fusion in WebGPU specifically. Fusing
+the four attention passes into the convolutions that feed them addresses all
+three at once.
+
+One methodological warning worth carrying: they find naive single-operation
+benchmarks **overestimate dispatch cost by about 20x** versus sequential
+dispatch. `dev/gpu_probe.html` times whole `render()` calls, which is the
+sequential case, so its numbers should not inherit that error.
+
+---
+
 ## 3. If an "advanced mode" is ever built
 
 For users with compute to spare, the evidence points at transformers, not at a
