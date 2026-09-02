@@ -131,6 +131,7 @@ def main():
         print(f"  gradient thresholds: flat<{lo:.4f} edge<{hi:.4f} texture>={hi:.4f}\n",
               flush=True)
 
+        skipped = {}
         for stem, hr_paths, lr_paths in pairs:
             for hp, lp in zip(hr_paths, lr_paths):
                 hr = load(hp, device)
@@ -138,6 +139,11 @@ def main():
                 m = masks_for(hr, lo, hi)
                 bc = bicubic(lr, args.scale)
                 if bc.shape != hr.shape:
+                    # Width is derived independently for HR and LR, so an
+                    # awkward --height rounds them apart and every frame of the
+                    # clip drops out. Silently, until this counter: one such run
+                    # reported "480 frames" while scoring only 96.
+                    skipped[stem] = skipped.get(stem, 0) + 1
                     continue
                 row = {
                     "clip": stem,
@@ -153,7 +159,16 @@ def main():
                     row[f"{name}_tex"] = masked_psnr(sr, hr, m["texture"])
                     row[f"{name}_sharp"] = sharpness_ratio(sr, hr, m["texture"])
                 rows.append(row)
-            print(f"  scored {stem}", flush=True)
+            n_skip = skipped.get(stem, 0)
+            note = "" if not n_skip else f"  [{n_skip} frames dropped on shape mismatch]"
+            print(f"  scored {stem}{note}", flush=True)
+
+    if skipped:
+        total = sum(skipped.values())
+        print(f"\nWARNING: {total} frames dropped on HR/bicubic shape mismatch, "
+              f"from {len(skipped)} clip(s): {sorted(skipped)}")
+        print(f"         --height {args.height} does not round consistently for "
+              f"those sources; try 1024.")
 
     rows = [r for r in rows if all(f"{n}_tex" in r for n in models)]
     busy = np.array([r["busy"] for r in rows])
