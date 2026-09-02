@@ -19,7 +19,14 @@
 const MEAN = [0.4488, 0.4371, 0.4040];
 
 // Half precision: implemented with f32 fallback, but off by default - see init().
-const USE_F16 = false;
+// The default is a measurement, not a law: scalar f16 was not faster than f32
+// on the GPU it was measured on (Turing). Other GPU families weight f16
+// differently, so allow a page to override it for benchmarking without editing
+// this file. Users are never affected -- nothing sets this in the extension.
+const USE_F16 = (typeof globalThis !== "undefined"
+                 && globalThis.__WEBVSR_FORCE_F16 !== undefined)
+                ? !!globalThis.__WEBVSR_FORCE_F16
+                : false;
 
 // Weight tensors in export order (matches export_webgpu_weights.py), for a
 // SPAN-Lite with C feature channels. [name, outC, inC, k]
