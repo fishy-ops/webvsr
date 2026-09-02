@@ -76,7 +76,9 @@ def main():
                     metavar="NAME=CKPT:CH:SCALE")
     ap.add_argument("--arch", default="span")
     ap.add_argument("--scale", type=int, default=2)
-    ap.add_argument("--height", type=int, default=1080)
+    # 1024, matching every other eval in this project: it is at or below the
+    # native height of all current clips, so no HR reference is ever enlarged.
+    ap.add_argument("--height", type=int, default=1024)
     ap.add_argument("--crf", type=int, default=28)
     ap.add_argument("--frames", type=int, default=48)
     ap.add_argument("--bins", type=int, default=5)
