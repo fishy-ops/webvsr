@@ -547,7 +547,28 @@ write `sB` in a single pass. `convAttn()` throws if an output aliases an input.
 | fused f16 | 21.4 ms | 48.0 ms |
 | speedup | **1.393x** | **1.379x** |
 
-Quality cost at 1080p: **`max_abs_diff` 1/255, mean 0.00315** — not perceptible.
+Quality cost at 1080p on a synthetic frame: **`max_abs_diff` 1/255, mean
+0.00315**.
+
+That frame was flat colour and 9px squares, which is not evidence about video.
+`dev/f16_quality.html` repeats the question properly: 24 frames from 6 clips
+spanning busyness 0.005-0.68, each put through a real x264 encode at CRF 28 by
+the same `make_pair` the evaluation harness uses, scored as **PSNR against the
+ground truth** rather than against f32. Frames are cropped to the highest-
+gradient 512px window, where quantisation error has the most to act on.
+
+| clip | PSNR f32 | PSNR f16 | delta | max pixel diff |
+|---|---|---|---|---|
+| dinner_1080p30 | 39.5179 | 39.5235 | +0.0056 | 1 |
+| bistro_30s | 29.2242 | 29.2236 | -0.0007 | 1 |
+| blue_sky_1080p25 | 24.5215 | 24.5207 | -0.0008 | 1 |
+| life_1080p30 | 25.2431 | 25.2432 | +0.0001 | 2 |
+| park_joy_1080p50 | 20.3777 | 20.3779 | +0.0002 | 1 |
+| crowd_run_1080p50 | 20.4312 | 20.4312 | 0.0000 | 1 |
+
+**Mean delta +0.0007 dB; the worst clip loses 0.0008 dB; worst pixel 2/255.**
+Both signs appear, which is what noise looks like rather than degradation.
+f16 is quality-neutral on real video.
 
 **The specific §2a prediction is not supported.** It said f16 should help at
 1080p *and not at 720p*, because raising `NEURAL_CAP` moved the workload across
@@ -559,7 +580,13 @@ roofline argument explains the *fusion* result well and the *f16* result poorly.
 This does not overturn `USE_F16 = false`: that was measured on Turing, a
 different GPU, and is not retested here. What it establishes is that the default
 is wrong **for Apple silicon**, where f16 is the single largest efficiency win
-available.
+available — 1.38x for a quality change of 0.0007 dB.
+
+**The evidence supports gating f16 on the adapter, not flipping it globally.**
+`adapter.info.vendor === 'apple'` is the population actually measured. Turing
+remains untested, and the one existing datapoint there says f16 bought nothing;
+enabling it everywhere would be extrapolating from one GPU family to all of
+them.
 
 Stacked, on the M4 Pro at 1080p: **73.2 ms unfused f32 -> 48.0 ms fused f16, a
 1.525x speedup** for zero perceptible quality change.
