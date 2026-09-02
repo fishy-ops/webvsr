@@ -180,6 +180,52 @@ and none were measured against this engine. They are candidates, not plans, and
 
 ---
 
+## 3a. The one idea that addresses efficiency and the slope together
+
+**Adaptive depth driven by estimated compression level.** Run fewer SPAB blocks
+on lightly-compressed video and more on heavily-compressed video.
+
+**Supporting evidence.** A blind compressed-video enhancement method
+(arXiv:2511.16137) learns a degradation representation, because the
+quantisation parameter is usually unavailable, then uses "a sequential
+inference strategy that adaptively adjusts the number of artifact reduction
+stages according to the estimated compression level". It raises PSNR gain from
+0.31 to 0.65 dB at QP 22 over blind methods **and cuts average inference time
+by 50%**. Same mechanism, both problems.
+
+It also fits this codebase: `content.js` already runs a governor that adapts
+internal *resolution* to the frame-time budget. Adapting *depth* is the same
+control one level down.
+
+**The caveat that decides whether it works.** The early-exit literature is
+sobering: exiting at the first *correct* exit is worth ~10% accuracy under
+corruption, but realistic confidence-based strategies deliver only **~1%**,
+because confidence is badly calibrated under distribution shift
+(arXiv:2212.01562). Exit mechanisms studied are confidence thresholds,
+conformal risk control, and learned gates (arXiv:2602.03043, arXiv:2506.21103).
+
+**Why this project is not in that trap.** Those results are about routing on
+the *model's own confidence*, which is exactly the unreliable signal. Here the
+routing signal is **exogenous and directly measurable**: how compressed the
+input is. The browser knows the video's resolution, and decoded-byte counters
+give a bitrate estimate over time. A cheap blockiness measure on the decoded
+frame is another option that never asks the network what it thinks.
+
+So the honest position: the *mechanism* has strong support and the *routing
+signal* is better-posed here than in the papers reporting 1%. That is a reason
+to try it, not a reason to assume it works.
+
+**What it needs.** A model trained to be truncatable, since blocks cannot
+simply be dropped from the current one -- `conv_cat` consumes features from
+blocks 1, 3 and 4 by construction, so skipping a block leaves it reading
+tensors that were never produced. Either train early-exit heads jointly, or
+train with stochastic depth. Note the literature does not settle whether a
+truncatable model loses quality at full depth: the slimmable-network paper
+retrieved reports its widest configuration but no single-width baseline
+(arXiv:2605.22677), so that control has to be run here.
+
+---
+
 ## 4. Training schedule: current runs are far too long
 
 Two independent runs under corrected codec-domain validation:
