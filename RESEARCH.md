@@ -626,6 +626,48 @@ builds return the same pass count.
 
 ---
 
+## 11. Re-scored on 15 clips: the perceptual win is real, the PSNR win is not
+
+Section 9's action item, executed. Shipped 2x against bicubic on the 15-clip set
+at `--height 1024`, 32 frames per clip, full metric suite.
+
+| CRF | texture PSNR | overall PSNR | DISTS | tLP | texture sharpness |
+|-----|--------------|--------------|-------|-----|-------------------|
+| 20 | +0.155 dB | +0.135 dB | **+8.9%** | +0.00235 | +0.0526 |
+| 28 | +0.197 dB | +0.190 dB | **+6.1%** | +0.00299 | +0.0591 |
+| 36 | +0.092 dB | +0.117 dB | **+3.7%** | +0.00354 | +0.0432 |
+
+The model wins on every metric at every CRF. But the PSNR margin is a fifth of
+what the old 4-clip set reported (+0.95 dB at CRF 28), while DISTS actually
+holds up slightly *better* (+6.1% against +5.2%). Splitting by clip provenance
+at CRF 28 shows why:
+
+| group | n | DISTS | texture PSNR | tLP | DISTS wins |
+|---|---|---|---|---|---|
+| 3 render clips | 3 | **+16.2%** | **+1.323 dB** | +0.0030 | 3/3 |
+| 12 real-camera clips | 12 | **+3.7%** | **-0.087 dB** | +0.0030 | 10/12 |
+
+**Three separate conclusions, and they differ:**
+
+1. **The PSNR advantage is entirely the render clips.** On real camera footage
+   it is -0.087 dB — zero. Any claim of the form "+1.4 dB" describes synthetic
+   content only. Section 9's finding stands.
+2. **The perceptual advantage survives but shrinks 4x**, +16.2% to +3.7% DISTS,
+   winning 10 of 12 real clips. Small, consistent, real. Two clips lose:
+   `controlled_burn` (-8.4%) and `vsr_test_video` (-4.1%).
+3. **The flicker advantage is completely unaffected by the split: +0.0030 on
+   both groups.** It is the only metric that does not care whether the content
+   is synthetic, which makes temporal stability the most transferable thing
+   this model does — and it is not what the project has been selecting on.
+
+**This resolves the question section 9 left open.** The model earns its GPU time,
+but on perceptual and temporal grounds worth roughly 4% DISTS, not on the
+distortion headline. That matches the original product goal — visibly better
+rather than higher PSNR — so the honest framing is a modest perceptual and
+temporal improvement, and PSNR should stop being quoted as the benefit.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
