@@ -188,6 +188,10 @@ def train():
     # so joint training from epoch 0 lets their gradients degrade the deep
     # exit -- measured as 37.37 -> 35.91 dB across one epoch. Train the new
     # heads against a frozen trunk first, then unfreeze.
+    parser.add_argument("--lr", type=float, default=None,
+                        help="override CONFIG['lr']; the 5e-4 default is a "
+                             "from-scratch rate and will damage a converged "
+                             "checkpoint loaded via --init-from")
     parser.add_argument("--freeze-trunk-epochs", type=int, default=0,
                         help="spanme only: epochs to train early-exit heads with "
                              "the trunk and deepest head frozen")
@@ -211,6 +215,8 @@ def train():
         cfg["log_file"] = args.log_file
     if args.num_workers is not None:
         cfg["num_workers"] = args.num_workers
+    if args.lr is not None:
+        cfg["lr"] = args.lr
     if args.crop_size is not None:
         cfg["crop_size"] = args.crop_size
     if args.batch_size is not None:
