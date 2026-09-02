@@ -16,7 +16,7 @@ that runs real-time video super-resolution in the page on the user's own GPU
 via hand-written WGSL compute shaders. No server, no ONNX Runtime, no WASM.
 
 Repo: `github.com/fishy-ops/webvsr`, working copy `aurora:~/dev/webvsr`, at
-commit `473e0f8` which matches both `origin/main` and the shipped build.
+commit `1a127b8`, which matches `origin/main` and the shipped build (v1.0.2).
 
 The value proposition is narrow and deliberate: it removes **compression
 artifacts** from low-resolution web video. On already-sharp video it is meant
@@ -154,9 +154,17 @@ Metrics, and how to read them:
 | tLP | LPIPS between consecutive output frames minus the same for GT. Flicker. <= 0 is ideal; positive means the model flickers more than the source |
 
 **Never select a checkpoint on PSNR.** PSNR is minimised by the conditional
-mean, which is the blurry answer. `train_span.py:324` still does this
-(`if val_psnr > best_psnr`) — it is a known outstanding issue and the reason a
-perceptually better model can be trained and then not shipped.
+mean, which is the blurry answer. The trainer now selects on DISTS and falls
+back to PSNR only if DISTS will not import. Fixing this one line was worth
+more than quadrupling the model; every run before it had been shipping its
+blurriest good checkpoint.
+
+**Validation must use the same degradation as training.** It did not until
+2026-09-01, and the cost was concrete: a 200-epoch run improved bicubic-val
+DISTS 0.0656 -> 0.0587 while its DISTS on codec-degraded video got *worse*,
+0.0988 -> 0.1023. `ValidationDataset` takes `degrade_fn` and seeds it per
+index so image i draws the same codec and quality every epoch; without that
+seeding, "best checkpoint" drifts toward whichever epoch drew easy encoders.
 
 Always keep the visual evidence. Comparison crops go to `/tank/webvsr/evidence`
 and are never deleted.
@@ -223,20 +231,37 @@ The trainer also gained `--init-from` (weights-only warm start; `--resume`
 restores the epoch counter and would exit immediately) and CLI overrides for
 the dead Windows data paths.
 
-The run in flight:
+**Concluded 2026-09-01. It shipped.** The winning recipe, ~41 s/epoch:
 
 ```
 .venv/bin/python -u training/train_span.py --channels 16 --scale 2 \
-  --ckpt-dir /tank/webvsr/ckpt_c16_codec \
+  --ckpt-dir /tank/webvsr/ckpt_c16_sharp2 \
   --train-dirs /tank/webvsr/train_hr --val-dir /tank/webvsr/val_hr \
-  --log-file /tank/webvsr/train_codec_log.json \
-  --codec-degrade --init-from checkpoints_c16/best_phase1.pth \
+  --codec-degrade --w-fft 0.5 --init-from checkpoints_c16/best_phase1.pth \
   --total-epochs 120 --phase1-epochs 120 --num-workers 8
 ```
 
-~41 s/epoch. The test it has to pass: **beat the shipped c16 on texture PSNR
-and DISTS at CRF 28 and 36**, on the stratified harness, with the gap growing
-rather than shrinking as CRF rises. Anything less does not justify the compute.
+Two changes carried it, and neither was architectural: DISTS selection
+instead of PSNR, and `w_fft` 0.01 -> 0.5, which ships at a weight low enough
+to be effectively off. Against the model it replaced:
+
+| CRF | texture PSNR | DISTS |
+|-----|--------------|-------|
+| 20  | 25.84 -> 26.37 | 0.0986 -> 0.0938 |
+| 28  | 24.61 -> 25.05 | 0.1248 -> 0.1206 |
+| 36  | 22.39 -> 22.69 | 0.1650 -> 0.1625 |
+
+**The test it did not pass is the slope.** The advantage over bicubic still
+shrinks as compression worsens -- texture +1.69 / +1.40 / +0.89 dB at CRF
+20 / 28 / 36 -- which is backwards from the product claim. Six runs across
+capacity, degradation, loss weighting, selection and trunk layout have all
+failed to bend it. Treat it as structural until something demonstrates
+otherwise, and do not spend another capacity run on it.
+
+An intermediate candidate (`ckpt_c16_sharp`, "sharp16") beat the shipped
+model on texture while *regressing* flat and edge below it. Whole-image
+means hid that; the per-bucket table caught it. Always read all three
+buckets before shipping a checkpoint.
 
 ---
 
@@ -253,8 +278,12 @@ rather than shrinking as CRF rises. Anything less does not justify the compute.
 
 ## 10. Known outstanding issues
 
-- `train_span.py:324` selects checkpoints on PSNR. Must become DISTS with a
-  PSNR floor and a tLP ceiling before any perceptual training is trusted.
+- Adding a PSNR floor and a tLP ceiling to DISTS selection is still open.
+  Selection is on DISTS alone today.
+- Training converges far sooner than the schedule assumes. Under corrected
+  validation, DISTS moved 0.2487 -> 0.2252 in five epochs and then sat in a
+  +/-0.003 band for the remaining 105. Long runs are buying noise; shorten
+  them before spending GPU time on anything else.
 - Eval clips are 3 rendered UE5 scenes + 1 real video. The rendered ones
   outvote the real one, and the model behaves differently on them. **More real
   video clips are the single biggest improvement available to the harness.**
@@ -262,8 +291,9 @@ rather than shrinking as CRF rises. Anything less does not justify the compute.
 - The extension's UI has never been validated in a real Chrome session; aurora
   has no browser and no display.
 
-Working-tree changes not yet committed: `extension/content.js` (max-mode
-passthrough fix, `NEURAL_CAP` 720->1080), `training/` additions.
+The 4x model (`span_lite_4x_c16.bin`) is still from the old JPEG-degraded
+recipe; only the 2x default has been retrained. `span_lite_2x_c16p2.bin` is
+in the package but referenced by no code.
 
 ---
 
