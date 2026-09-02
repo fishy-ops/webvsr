@@ -120,6 +120,41 @@ more experiments rather than longer ones.
 
 ---
 
+## 6. The 2× recipe does not transfer to 4× as-is
+
+The 4× retrain (`ckpt_c16x4_sharp`) used the identical recipe that won at 2×,
+and **lost to the shipped 4× model on every metric at every CRF**:
+
+| CRF | texture PSNR | DISTS | tLP |
+|-----|--------------|-------|-----|
+| 20 | 20.29 → 20.01 | 0.1922 → 0.1926 | −0.0075 → −0.0030 |
+| 28 | 19.76 → 19.54 | 0.2109 → 0.2122 | −0.0090 → −0.0055 |
+| 36 | 18.53 → 18.48 | 0.2419 → 0.2430 | −0.0142 → −0.0122 |
+
+It is blurrier (texture sharpness ratio 0.576 vs 0.606 at CRF 20) and flickers
+more. It was not shipped.
+
+**The tell is that validation and the harness disagreed again.** Validation
+DISTS improved 0.2904 → 0.2774 while harness DISTS worsened — the same shape as
+the bug fixed in §5 of `CONTEXT.md`, so a second domain gap is still open at 4×.
+
+**Most likely cause: LR crop size.** `crop_size` is in HR pixels, so the LR crop
+the model sees is `crop_size / scale`:
+
+| Run | crop_size | LR crop trained on | LR the harness feeds | Outcome |
+|---|---|---|---|---|
+| 2× | 256 | **128** | 256 | won |
+| 4× | 256 | **64** | 256 | lost |
+
+At 4× the model trained on a quarter of the context it was judged on, while the
+2× run trained on half. `--crop-size` now exists for exactly this; the retry
+uses 512 (LR 128) to match the run that worked.
+
+**General lesson: when changing scale, hold the LR crop constant, not the HR
+crop.** Everything the network sees is on the LR side.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via

@@ -162,6 +162,12 @@ def train():
                         help="degrade with real video encoders (H.264/H.265/MPEG-4) "
                              "instead of JPEG -- matches the deployment domain")
     parser.add_argument("--num-workers", type=int, default=None)
+    # crop_size is HR; the LR crop the model actually sees is crop_size/scale.
+    # At scale 4 the shipped 256 gives a 64px LR crop while the harness feeds
+    # 256px, so the model is judged on four times the context it trained on.
+    parser.add_argument("--crop-size", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--accum-steps", type=int, default=None)
     # w_fft ships at 0.01, which is ~0.6% of the loss -- effectively off. It is
     # the term that penalises missing high frequency, i.e. the direct lever
     # against the over-smoothing that PSNR selection rewards.
@@ -191,6 +197,12 @@ def train():
         cfg["log_file"] = args.log_file
     if args.num_workers is not None:
         cfg["num_workers"] = args.num_workers
+    if args.crop_size is not None:
+        cfg["crop_size"] = args.crop_size
+    if args.batch_size is not None:
+        cfg["batch_size"] = args.batch_size
+    if args.accum_steps is not None:
+        cfg["accumulation_steps"] = args.accum_steps
     if args.w_fft is not None:
         cfg["w_fft"] = args.w_fft
     if args.w_perceptual is not None:
