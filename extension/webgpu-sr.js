@@ -28,6 +28,18 @@ const USE_F16 = (typeof globalThis !== "undefined"
                 ? !!globalThis.__WEBVSR_FORCE_F16
                 : false;
 
+// Fuse each SPAB block's third convolution with the attention that consumes it.
+// The attention is element-wise on that conv's own output and the block input,
+// so it can be applied at write time instead of in a pass of its own. That
+// removes, per block, one full C-channel buffer write and one read -- 17% of
+// all intermediate traffic (RESEARCH.md 2a) -- and 4 of 22 dispatches, at
+// 32-71us each on Metal (RESEARCH.md 2b). Numerically identical: same
+// arithmetic, same order, one less round-trip through DRAM.
+const FUSE_ATTN = (typeof globalThis !== "undefined"
+                   && globalThis.__WEBVSR_FORCE_FUSE_ATTN !== undefined)
+                  ? !!globalThis.__WEBVSR_FORCE_FUSE_ATTN
+                  : true;
+
 // Weight tensors in export order (matches export_webgpu_weights.py), for a
 // SPAN-Lite with C feature channels. [name, outC, inC, k]
 function weightSpec(C, scale) {
@@ -165,6 +177,7 @@ class WebGPUSR {
     const EN = this.f16 ? 'enable f16;\n' : '';
     this.pipe.pre = mk(EN + buildPre(T));
     this.pipe.conv = mk(EN + buildConv(T));
+    if (FUSE_ATTN) this.pipe.convattn = mk(EN + buildConv(T, true));
     this.pipe.attn = mk(EN + buildAttn(T));
     this.pipe.cat = mk(EN + buildCat(T, this.C));
     this.pipe.shuffle = mk(EN + buildShuffle(T));
@@ -252,6 +265,27 @@ class WebGPUSR {
         ],
       });
     };
+    // Fused conv3x3 + SPAB attention: [in, weight, bias, out, params, xb].
+    // `out` must differ from both `in` and `xb`: the conv reads a 3x3
+    // neighbourhood, so writing into either would be a read-write hazard. The
+    // fused pass list below is buffer-planned for exactly that.
+    const convAttn = (inBuf, name, xbBuf, outBuf, inC, outC, k) => {
+      if (outBuf === inBuf || outBuf === xbBuf) {
+        throw new Error(`convAttn ${name}: output aliases an input`);
+      }
+      const params = this._u([inW, inH, inC, outC, 0, k]);
+      return d.createBindGroup({
+        layout: P.convattn.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: inBuf } },
+          { binding: 1, resource: { buffer: W[name].weight } },
+          { binding: 2, resource: { buffer: W[name].bias } },
+          { binding: 3, resource: { buffer: outBuf } },
+          { binding: 4, resource: { buffer: params } },
+          { binding: 5, resource: { buffer: xbBuf } },
+        ],
+      });
+    };
     const attn = (t3, xb, out) => {
       const params = this._u([inW, inH, C, 0]);
       return d.createBindGroup({
@@ -266,7 +300,34 @@ class WebGPUSR {
     };
 
     // Ordered pass list: [pipelineKey, bindGroup, dispatchZ (= output channels)]
-    this.passes = [
+    //
+    // Fusing c3 with the attention changes which scratch buffer each block
+    // lands in, so the whole chain is re-planned rather than patched: a naive
+    // fusion of block 2 would have it read and write sB in one pass. f0, mid1
+    // and mid3 are never reused as scratch -- conv_cat needs them at the end.
+    this.passes = FUSE_ATTN ? [
+      ['conv', conv(B.x3, 'conv_first', B.f0, 3, C, 3, 0), C],
+      // block 1: in f0 -> out sB
+      ['conv', conv(B.f0, 'b1c1', B.mid1, C, C, 3, 1), C],
+      ['conv', conv(B.mid1, 'b1c2', B.sA, C, C, 3, 1), C],
+      ['convattn', convAttn(B.sA, 'b1c3', B.f0, B.sB, C, C, 3), C],
+      // block 2: in sB -> out sA
+      ['conv', conv(B.sB, 'b2c1', B.sA, C, C, 3, 1), C],
+      ['conv', conv(B.sA, 'b2c2', B.sC, C, C, 3, 1), C],
+      ['convattn', convAttn(B.sC, 'b2c3', B.sB, B.sA, C, C, 3), C],
+      // block 3: in sA -> out sC
+      ['conv', conv(B.sA, 'b3c1', B.mid3, C, C, 3, 1), C],
+      ['conv', conv(B.mid3, 'b3c2', B.sB, C, C, 3, 1), C],
+      ['convattn', convAttn(B.sB, 'b3c3', B.sA, B.sC, C, C, 3), C],
+      // block 4: in sC -> out sA
+      ['conv', conv(B.sC, 'b4c1', B.sA, C, C, 3, 1), C],
+      ['conv', conv(B.sA, 'b4c2', B.sB, C, C, 3, 1), C],
+      ['convattn', convAttn(B.sB, 'b4c3', B.sC, B.sA, C, C, 3), C],
+      // tail
+      ['conv', conv(B.sA, 'conv_last', B.bb4, C, C, 3, 0), C],
+      ['cat', this._catBG(), C],
+      ['conv', conv(B.catout, 'upsampler', B.up, C, 3 * this.scale * this.scale, 3, 0), 3 * this.scale * this.scale],
+    ] : [
       ['conv', conv(B.x3, 'conv_first', B.f0, 3, C, 3, 0), C],
       // block 1 (in f0)
       ['conv', conv(B.f0, 'b1c1', B.mid1, C, C, 3, 1), C],
@@ -380,6 +441,7 @@ class WebGPUSR {
       pass.setPipeline(this.pipe[key]);
       pass.setBindGroup(0, bg);
       if (key === 'attn') pass.dispatchWorkgroups(gx16, gy16, oc);        // per-channel (oc = C)
+      else if (key === 'convattn') pass.dispatchWorkgroups(gx16, gy16, Math.ceil(oc / 8)); // same geometry as conv
       else if (key === 'cat') pass.dispatchWorkgroups(gx8, gy8, Math.ceil(oc / 8)); // 8 ch/thread
       else pass.dispatchWorkgroups(gx16, gy16, Math.ceil(oc / 8));        // conv: 2×2px×8ch/thread
     }
@@ -519,7 +581,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // loaded once per input channel and reused across all 9 taps × 4 pixels, and
 // every weight fetch is reused across all 4 pixels - maximizing arithmetic
 // intensity (the measured bottleneck). Grid: ceil(W/2) × ceil(H/2) threads.
-const buildConv = (T) => {
+const buildConv = (T, fuseAttn = false) => {
   const L = [];
   L.push(`
 @group(0) @binding(0) var<storage, read> inp: array<${T}>;
@@ -528,6 +590,7 @@ const buildConv = (T) => {
 @group(0) @binding(3) var<storage, read_write> outp: array<${T}>;
 struct P { W:u32, H:u32, inC:u32, outC:u32, act:u32, k:u32 };
 @group(0) @binding(4) var<uniform> pp: P;
+${fuseAttn ? `@group(0) @binding(5) var<storage, read> xb: array<${T}>;` : ''}
 fn silu(v: f32) -> f32 { return v / (1.0 + exp(-v)); }
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -564,10 +627,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     L.push(`    var v0=a0_${k}; var v1=a1_${k}; var v2=a2_${k}; var v3=a3_${k};`);
     L.push('    if (doAct) { v0=silu(v0); v1=silu(v1); v2=silu(v2); v3=silu(v3); }');
     L.push(`    let oc=(o+${k}u)*px;`);
+    if (fuseAttn) {
+      // att = sigmoid(v) - 0.5 ; out = (v + xb) * att   -- exactly buildAttn,
+      // evaluated here while v is still in a register.
+      L.push('    let i0=oc+by*W+bx; let i1=i0+1u;');
+      L.push('    let i2=oc+(by+1u)*W+bx; let i3=i2+1u;');
+      for (let q = 0; q < 4; q++)
+        L.push(`    v${q}=(v${q}+f32(xb[i${q}]))*(1.0/(1.0+exp(-v${q}))-0.5);`);
+      L.push(`    outp[i0]=${T}(v0);`);
+      L.push(`    if (vx1) { outp[i1]=${T}(v1); }`);
+      L.push(`    if (vy1) { outp[i2]=${T}(v2); }`);
+      L.push(`    if (vx1 && vy1) { outp[i3]=${T}(v3); }`);
+    } else {
     L.push(`    outp[oc+by*W+bx]=${T}(v0);`);
     L.push(`    if (vx1) { outp[oc+by*W+bx+1u]=${T}(v1); }`);
     L.push(`    if (vy1) { outp[oc+(by+1u)*W+bx]=${T}(v2); }`);
     L.push(`    if (vx1 && vy1) { outp[oc+(by+1u)*W+bx+1u]=${T}(v3); }`);
+    }
     L.push('  }');
   }
   L.push('}');
