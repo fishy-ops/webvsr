@@ -257,7 +257,9 @@ def load_model(ckpt, channels, scale, device, arch="span", depth=None):
     --arch, and `depth` selects which exit to evaluate."""
     blob_peek = torch.load(ckpt, map_location="cpu", weights_only=False)
     peek = blob_peek.get("model", blob_peek.get("model_state_dict", blob_peek))
-    if any(k.startswith("conv_cat.") and k.count(".") > 2 for k in peek):
+    # SPANLite names its blocks "block_1..4"; SPANLiteME uses an nn.ModuleList,
+    # so "blocks.0..3" is present in one and absent in the other.
+    if any(k.startswith("blocks.") for k in peek):
         from model_span_me import SPANLiteME
         n_blocks = 1 + max(int(k.split(".")[1]) for k in peek if k.startswith("blocks."))
         depths = set()
