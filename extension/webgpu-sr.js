@@ -18,15 +18,35 @@
 
 const MEAN = [0.4488, 0.4371, 0.4040];
 
-// Half precision: implemented with f32 fallback, but off by default - see init().
-// The default is a measurement, not a law: scalar f16 was not faster than f32
-// on the GPU it was measured on (Turing). Other GPU families weight f16
-// differently, so allow a page to override it for benchmarking without editing
-// this file. Users are never affected -- nothing sets this in the extension.
-const USE_F16 = (typeof globalThis !== "undefined"
-                 && globalThis.__WEBVSR_FORCE_F16 !== undefined)
-                ? !!globalThis.__WEBVSR_FORCE_F16
-                : false;
+// Half precision. Enabled per GPU vendor rather than globally, because the
+// only two measurements disagree and each is only about its own hardware:
+//
+//   Apple M4 Pro : 1.393x at 720p, 1.379x at 1080p (RESEARCH.md 10)
+//   Turing (2070): no faster than f32 -- the original reason this was false
+//
+// Quality was verified on real codec-degraded video, not a test pattern: 24
+// frames over 6 clips, PSNR against ground truth, mean delta +0.0007 dB, worst
+// clip -0.0008 dB, worst pixel 2/255, deltas in both directions. f16 costs
+// nothing measurable; the open question is only whether it is *faster* on a
+// given GPU, and that is what this list records.
+//
+// To widen it, measure first with dev/gpu_probe.html and dev/f16_quality.html
+// on that GPU, then add the vendor here. Set to true to enable everywhere.
+const F16_VENDORS = ['apple'];
+
+// A page may override for benchmarking. Nothing in the extension sets this.
+const F16_OVERRIDE = (typeof globalThis !== "undefined"
+                      && globalThis.__WEBVSR_FORCE_F16 !== undefined)
+                     ? !!globalThis.__WEBVSR_FORCE_F16
+                     : null;
+
+// adapter.info is not available on every browser; absent vendor => stay on f32.
+const f16WantedFor = (adapter) => {
+  if (F16_OVERRIDE !== null) return F16_OVERRIDE;
+  if (F16_VENDORS === true) return true;
+  const vendor = ((adapter.info && adapter.info.vendor) || '').toLowerCase();
+  return F16_VENDORS.some((v) => vendor.includes(v));
+};
 
 // Fuse each SPAB block's third convolution with the attention that consumes it.
 // The attention is element-wise on that conv's own output and the block input,
@@ -78,11 +98,10 @@ class WebGPUSR {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) { console.warn('[WebVSR] No WebGPU adapter'); return false; }
     this.hasTS = adapter.features.has('timestamp-query');
-    // f16 is fully implemented with an automatic f32 fallback, but defaults OFF:
-    // on this GPU class scalar f16 is NOT faster than f32 (measured - the 2× only
-    // comes from packed vec2<f16>, a bigger rewrite with quality risk). Set
-    // USE_F16 = true to trade a little accuracy for ~half the VRAM on tight GPUs.
-    this.f16 = USE_F16 && adapter.features.has('shader-f16');
+    // f16 with an automatic f32 fallback, gated by GPU vendor: see F16_VENDORS.
+    // On Apple silicon it is 1.38x with no measurable quality cost; on Turing it
+    // was not faster, which is why this is a per-vendor list and not a boolean.
+    this.f16 = f16WantedFor(adapter) && adapter.features.has('shader-f16');
     this.FS = this.f16 ? 2 : 4;                        // bytes per scalar
     const feats = [];
     if (this.hasTS) feats.push('timestamp-query');
