@@ -228,7 +228,30 @@ def freeze_reparam(model):
     return model
 
 
-def load_model(ckpt, channels, scale, device, arch="span"):
+def load_model(ckpt, channels, scale, device, arch="span", depth=None):
+    """Build and load a model. A multi-exit checkpoint is detected from its
+    keys, so `--model name=ckpt:ch:scale:depth` works without also passing
+    --arch, and `depth` selects which exit to evaluate."""
+    blob_peek = torch.load(ckpt, map_location="cpu", weights_only=False)
+    peek = blob_peek.get("model", blob_peek.get("model_state_dict", blob_peek))
+    if any(k.startswith("conv_cat.") and k.count(".") > 2 for k in peek):
+        from model_span_me import SPANLiteME
+        n_blocks = 1 + max(int(k.split(".")[1]) for k in peek if k.startswith("blocks."))
+        depths = set()
+        for k in peek:
+            if k.startswith("conv_cat."):
+                tag = k.split(".")[1]
+                depths.add(n_blocks if tag == "full" else int(tag.lstrip("d")))
+        model = SPANLiteME(feature_channels=channels, upscale=scale,
+                           exit_depths=tuple(sorted(depths)), num_blocks=n_blocks)
+        model.load_state_dict(peek)
+        model.eval().to(device)
+        model._eval_depth = depth if depth is not None else model.max_depth
+        if model._eval_depth not in model.exit_depths:
+            raise SystemExit(f"{ckpt}: depth {model._eval_depth} is not a trained "
+                             f"exit; have {model.exit_depths}")
+        return freeze_reparam(model)
+
     if arch == "unshuffle":
         from model_span_unshuffle import SPANLiteUnshuffle
         model = SPANLiteUnshuffle(feature_channels=channels, upscale=scale)
@@ -246,7 +269,9 @@ def load_model(ckpt, channels, scale, device, arch="span"):
 
 @torch.no_grad()
 def run_model(model, lr):
-    return model(lr).clamp(0, 1)
+    d = getattr(model, "_eval_depth", None)
+    out = model(lr) if d is None else model(lr, depth=d)
+    return out.clamp(0, 1)
 
 
 def bicubic(lr, scale):
@@ -378,13 +403,17 @@ def main():
     models = {"bicubic": lambda lr: bicubic(lr, args.scale)}
     for spec in args.model:
         name, rest = spec.split("=", 1)
-        # NAME=CKPT:CH:SCALE[:ARCH]
+        # NAME=CKPT:CH:SCALE[:ARCH], or [:DEPTH] to pick a multi-exit exit.
         parts = rest.rsplit(":", 3)
+        depth = None
         if len(parts) == 4 and not parts[3].isdigit():
             ckpt, ch, sc, arch = parts
+        elif len(parts) == 4 and parts[3].isdigit() and parts[2].isdigit():
+            ckpt, ch, sc, arch = parts[0], parts[1], parts[2], "span"
+            depth = int(parts[3])
         else:
             ckpt, ch, sc = rest.rsplit(":", 2); arch = "span"
-        m = load_model(ckpt, int(ch), int(sc), device, arch)
+        m = load_model(ckpt, int(ch), int(sc), device, arch, depth=depth)
         models[name] = (lambda mm: (lambda lr: run_model(mm, lr)))(m)
 
     perc = Perceptual(device)
