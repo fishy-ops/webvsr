@@ -529,7 +529,29 @@ per frame drop **22 → 18**.
 | speedup | **1.074x** | **1.107x** |
 
 **Output is bit-identical: `max_abs_diff = 0` at both resolutions.** Same
-arithmetic, same order, one less DRAM round-trip. The gain is larger at 1080p,
+arithmetic, same order, one less DRAM round-trip.
+
+**On Turing the same change is roughly neutral.** Measured through Chrome 152 +
+Xvfb + Vulkan on the RTX 2070 SUPER (the correctness check passes there: 22
+passes unfused, 18 fused, both rendering):
+
+| RTX 2070 SUPER | 720p | 1080p |
+|---|---|---|
+| unfused | 27.4 ms | 50.8 ms |
+| fused | 24.7 ms | 52.0 ms |
+| speedup | 1.109x | 0.977x |
+
+Do not read the 1080p number as a regression. Two separate unfused runs measured
+50.8 ms and 53.4 ms at 1080p — **~5% run-to-run spread, larger than the 2.4%
+"slowdown"**. The honest statement is that fusion is a clear win on Apple
+silicon, and within noise of neutral on Turing.
+
+That split is consistent with §2b: per-dispatch overhead is 32-71us on Metal
+against 24-36us on Vulkan, so removing four dispatches is worth roughly twice as
+much on Apple. The traffic saving should help both, but it is evidently not
+large enough on Turing to clear the noise floor at 1080p. Fusion stays enabled:
+it is bit-identical, clearly positive on one GPU family, and not measurably
+negative on the other. The gain is larger at 1080p,
 which is the direction §2a predicts: the more bandwidth-bound the workload, the
 more removing traffic is worth. §2a's estimate was 17% of *intermediate* traffic;
 10.7% end-to-end is consistent, since pre, shuffle, upsampler, finish and

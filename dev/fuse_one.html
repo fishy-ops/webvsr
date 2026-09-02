@@ -1,0 +1,41 @@
+<!DOCTYPE html><html><head><meta charset=utf-8><title>fuseone</title></head><body><pre id=o>...</pre>
+<script>
+// One build per page load. Creating both engines in a single page leaves the
+// first one's 1080p buffers alive and the second init never returns.
+const post = (o) => fetch('/result', { method: 'POST', body: JSON.stringify(o) }).catch(() => {});
+const med = (xs) => { const s=[...xs].sort((a,b)=>a-b); return s[s.length>>1]; };
+const frameFor = (w,h) => {
+  const oc = new OffscreenCanvas(w,h); const g = oc.getContext('2d');
+  g.fillStyle='#456'; g.fillRect(0,0,w,h);
+  for (let k=0;k<400;k++){ g.fillStyle='hsl('+(k*7)+',60%,'+(30+(k%40))+'%)'; g.fillRect((k*37)%w,(k*53)%h,9,9); }
+  return new VideoFrame(oc,{timestamp:0});
+};
+(async () => {
+  const fuse = location.search.includes('fused') && !location.search.includes('unfused');
+  const tag = fuse ? 'fused' : 'unfused';
+  const out = { build: tag };
+  try {
+    globalThis.__WEBVSR_FORCE_FUSE_ATTN = fuse;
+    const src = await fetch('/extension/webgpu-sr.js?t='+Date.now()).then(r=>r.text());
+    const Cls = new Function(src + '\nreturn WebGPUSR;')();
+    const e = new Cls(); await e.init();
+    await e.loadWeights('/extension/models/span_lite_2x_c16.bin');
+    for (const h of [720, 1080]) {
+      const w = Math.round(h*16/9) & ~1;
+      const c = document.createElement('canvas'); c.width=w*2; c.height=h*2;
+      e.configure(c, w, h, w*2, h*2);
+      out.passes = e.passes.length + 2;
+      const f = frameFor(w,h);
+      for (let k=0;k<6;k++) e.render(f);
+      await e.device.queue.onSubmittedWorkDone();
+      const ts=[];
+      for (let k=0;k<12;k++){ const t0=performance.now(); e.render(f); await e.device.queue.onSubmittedWorkDone(); ts.push(performance.now()-t0); }
+      out[h+'p'] = +med(ts).toFixed(3);
+      f.close();
+    }
+  } catch (err) { out.error = String(err && err.message || err); }
+  out.FINAL = true;
+  await post(out);
+  document.title='DONE';
+})();
+</script></body></html>
