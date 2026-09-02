@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>WebVSR GPU probe</title></head>
+<body style="background:#111;color:#ddd;font-family:ui-monospace,monospace;padding:1rem">
+<h3>WebVSR capability + precision probe</h3>
+<pre id="out">click run, or call window.probe() / window.compare()</pre>
+<button id="b" style="font:inherit;padding:.4rem .8rem">run</button>
+<script>
+// What the engine can actually use on THIS gpu, and whether half precision is
+// worth enabling here. The shipped USE_F16=false came from a measurement on
+// Turing; this answers the same question for whatever gpu is running it.
+const OUT = document.getElementById('out');
+const say = (o) => OUT.textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 1);
+
+window.probe = async () => {
+  if (!navigator.gpu) return { error: 'WebGPU unavailable' };
+  const a = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!a) return { error: 'no adapter' };
+  const i = a.info || {};
+  return {
+    gpu: [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join(' / '),
+    features: [...a.features].sort(),
+    // the three that decide what optimisations are even open to us
+    has_f16: a.features.has('shader-f16'),
+    has_timestamp: a.features.has('timestamp-query'),
+    has_subgroups: a.features.has('subgroups'),
+    limits: {
+      maxComputeInvocationsPerWorkgroup: a.limits.maxComputeInvocationsPerWorkgroup,
+      maxComputeWorkgroupStorageSize: a.limits.maxComputeWorkgroupStorageSize,
+      maxStorageBufferBindingSize: a.limits.maxStorageBufferBindingSize,
+    },
+  };
+};
+
+// Load a fresh copy of the engine with f16 forced on or off. Cache-busted and
+// re-evaluated each time, because USE_F16 is read once at module scope.
+const loadEngine = (f16, tag) => new Promise((res, rej) => {
+  globalThis.__WEBVSR_FORCE_F16 = f16;
+  const s = document.createElement('script');
+  s.src = '../extension/webgpu-sr.js?probe=' + tag;
+  s.onload = () => res(); s.onerror = () => rej(new Error('engine load failed'));
+  document.head.appendChild(s);
+});
+
+// Median, not mean: gpu frame times are skewed by occasional long frames.
+const med = (xs) => { const s = [...xs].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+window.compare = async (heights = [720, 1080], iters = 30) => {
+  const cap = await window.probe();
+  if (cap.error) return cap;
+  const results = { gpu: cap.gpu, has_f16: cap.has_f16, runs: {} };
+  if (!cap.has_f16) { results.note = 'shader-f16 unsupported here; f32 only'; }
+
+  for (const f16 of cap.has_f16 ? [false, true] : [false]) {
+    try {
+      await loadEngine(f16, (f16 ? 'f16' : 'f32') + '-' + Date.now());
+      const e = new WebGPUSR();
+      if (!await e.init()) { results.runs[f16 ? 'f16' : 'f32'] = { error: 'init failed' }; continue; }
+      // precision actually negotiated, not what we asked for
+      const got = e.f16 ? 'f16' : 'f32';
+      await e.loadWeights('../extension/models/span_lite_2x_c16.bin');
+      const canvas = document.createElement('canvas');
+      const per = {};
+      for (const h of heights) {
+        const w = Math.round(h * 16 / 9) & ~1;
+        const src = new OffscreenCanvas(w, h);
+        const cx = src.getContext('2d');
+        cx.fillStyle = '#456'; cx.fillRect(0, 0, w, h);
+        for (let k = 0; k < 400; k++) {                 // texture, so it is not
+          cx.fillStyle = `hsl(${k * 7},60%,${30 + (k % 40)}%)`;  // a trivial flat frame
+          cx.fillRect((k * 37) % w, (k * 53) % h, 9, 9);
+        }
+        const bmp = src.transferToImageBitmap();
+        for (let k = 0; k < 8; k++) await e.render(bmp, canvas);   // warmup: shader compile
+        const ts = [];
+        for (let k = 0; k < iters; k++) {
+          const t0 = performance.now();
+          await e.render(bmp, canvas);
+          ts.push(performance.now() - t0);
+        }
+        per[h + 'p'] = +med(ts).toFixed(3);
+      }
+      results.runs[got] = per;
+    } catch (err) {
+      results.runs[f16 ? 'f16' : 'f32'] = { error: String(err && err.message || err) };
+    }
+  }
+  const f32 = results.runs.f32, f16 = results.runs.f16;
+  if (f32 && f16 && !f32.error && !f16.error) {
+    results.speedup = Object.fromEntries(
+      Object.keys(f32).map(k => [k, +(f32[k] / f16[k]).toFixed(3)]));
+    results.verdict = Object.values(results.speedup).every(v => v > 1.05)
+      ? 'f16 is faster here - worth enabling per-gpu'
+      : 'f16 is not faster here - shipped default stands';
+  }
+  return results;
+};
+
+document.getElementById('b').onclick = async () => {
+  say('running...');
+  try { say(await window.compare()); } catch (e) { say('ERROR ' + e.message); }
+};
+window.probe().then(say).catch(e => say('probe failed: ' + e.message));
+</script>
+</body></html>
