@@ -355,6 +355,94 @@ source frames of at least 512x512.
 
 ---
 
+## 7. The busy-scene failure is real, and it is over-sharpening — not blur
+
+`training/eval/busy_eval.py` makes the *frame* the unit instead of the pixel.
+`stratified_eval` pools every frame's texture pixels into one number, which
+cannot distinguish a calm frame with a small detailed region from a frame that
+is detailed everywhere — exactly the distinction the complaint is about. Each
+frame is scored by **busyness** (fraction of pixels above the global texture
+threshold) and frames are binned by it.
+
+Shipped 2x c16, 160 frames, 4 clips, CRF 28:
+
+| bin | busyness | n | bicubic tex PSNR | shipped | gain | sharp bicubic | sharp model |
+|-----|----------|---|------------------|---------|------|---------------|-------------|
+| 0 | 0.097-0.121 | 32 | 21.185 | 22.604 | **+1.420** | 0.8191 | 0.8609 |
+| 1 | 0.121-0.268 | 32 | 21.937 | 23.351 | **+1.414** | 0.8294 | 0.8667 |
+| 2 | 0.268-0.293 | 32 | 23.259 | 24.655 | **+1.396** | 0.8230 | 0.8611 |
+| 3 | 0.293-0.677 | 32 | 24.531 | 25.296 | +0.765 | 0.8101 | 0.8857 |
+| 4 | 0.677-0.695 | 32 | 23.988 | 23.413 | **-0.575** | 0.8007 | 0.9498 |
+
+**The complaint reproduces.** The gain is flat at ~+1.4 dB up to a third of the
+frame being textured, halves by bin 3, and goes **negative** in bin 4 — on that
+content the model is measurably worse than doing nothing.
+
+**The mechanism is the opposite of what "falls apart" usually means.** In bin 4
+the model's sharpness ratio is **0.9498 against bicubic's 0.8007** — it emits
+*more* gradient energy than the baseline while losing 0.58 dB. It is not mushing
+detail; it is manufacturing detail in the wrong places. That is why it looks bad
+enough to switch off: wrong high-frequency structure is far more objectionable
+than softness, and PSNR understates how bad it looks.
+
+Note this is the same failure the project already rejected GANs for
+(`CONTEXT.md` 7, fabricated fence lines) — appearing in a non-GAN model, driven
+by content density rather than by the loss.
+
+### What this does not yet establish
+
+**Busyness is confounded with clip identity, and the confound is total.**
+
+| clip | n | busyness range | mean gain | model sharpness |
+|---|---|---|---|---|
+| bistro_30s | 40 | 0.097-0.134 | +1.413 | 0.8621 |
+| chess_30s | 40 | 0.287-0.305 | +1.304 | 0.8510 |
+| locomotive_30s | 40 | 0.228-0.276 | +1.444 | 0.8694 |
+| vsr_test_video | 40 | 0.675-0.695 | **-0.625** | **0.9568** |
+
+Each clip spans only 0.018-0.048 of busyness, so bin 4 *is* `vsr_test_video` and
+nothing else. Within-clip correlations between busyness and gain are weak and
+inconsistent in sign (+0.17, -0.06, +0.53, +0.38) over ranges too narrow to
+mean anything.
+
+So the honest claim is: **one clip out of four is catastrophically bad, it is
+also by far the busiest, and its failure mode is excess fabricated
+high-frequency detail.** Whether busyness *causes* this, or merely correlates
+with whatever that clip contains, needs clips that span 0.1-0.7 busyness
+*within* the same evaluation. The current 4-clip set cannot separate them, and
+no conclusion should be built on the busyness axis until it does.
+
+---
+
+## 8. Training data is the binding constraint, and the fix is already on disk
+
+Three separate problems above reduce to one cause:
+
+- 6a: the 4x LR-crop experiment cannot run — it needs 512px HR crops, and
+  Vimeo-90K is 448x256.
+- 7: the busy-scene axis cannot be tested — it needs clips spanning a wide
+  busyness range.
+- Training happens on 448x256 frames while evaluation runs at 1080p, so the
+  model is judged far outside the resolution it was fitted on.
+
+**`/tank/webvsr/datasets/DIV2K_train_HR` already holds 800 images (3.4 GB) with
+a median short side of 1356 px and a minimum of 1140 — every one of them
+supports a 512 crop, and most support 1024.** DIV2K_valid_HR adds 100 more.
+They were downloaded and then never wired into training: `CONFIG["train_dirs"]`
+points only at the Vimeo symlinks.
+
+That makes the 4x retry runnable today with no download at all. The caveat is
+that DIV2K is stills, so it carries no temporal signal and none of the codec
+artifacts the codec-domain degradation was built for — it should be *mixed*
+with the video frames, not swapped for them.
+
+Downloading real high-resolution video is still worth doing, but for section 7
+rather than section 6a: what is missing there is busyness *coverage* across many
+clips, which stills cannot provide and which 4K adds nothing to on its own — a
+1080p clip already exceeds the 512 crop requirement several times over.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
