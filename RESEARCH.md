@@ -120,6 +120,31 @@ more experiments rather than longer ones.
 
 ---
 
+## 5a. SPANV2 attention: tested here, does not transfer
+
+Trained 60 epochs, warm-started from the shipped 2× model with the attention
+projection identity-initialised, so it began numerically equal to it.
+
+| CRF 20 (all clips) | texture | DISTS | flat | edge |
+|---|---|---|---|---|
+| sharp2 | **26.37** | 0.0938 | **42.31** | **38.91** |
+| spanv2 | 26.34 | **0.0934** | 41.92 | 38.38 |
+
+At CRF 36 it also loses on DISTS (0.1627 vs 0.1625). Validation agreed: DISTS
+moved 0.2206 to 0.2204 across the whole run, which is noise. Not shipped.
+
+The identity init is what makes this conclusive. The model started at exactly
+the shipped quality, so 60 epochs of strictly greater freedom yielding nothing
+is a statement about the change itself.
+
+**This sharpens rather than weakens section 2.** SPANV2 won the *runtime*
+track, and the report's own insight is memory bandwidth, not FLOPs -- the win
+came from kernel fusion. The learned attention rode alongside it. The quality
+half is now tested and empty here; **pass fusion is the part that has not been
+tried, and it remains the lever.**
+
+---
+
 ## 6. The 2× recipe does not transfer to 4× as-is
 
 The 4× retrain (`ckpt_c16x4_sharp`) used the identical recipe that won at 2×,
