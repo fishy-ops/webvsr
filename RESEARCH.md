@@ -357,6 +357,13 @@ source frames of at least 512x512.
 
 ## 7. The busy-scene failure is real, and it is over-sharpening — not blur
 
+> **RETRACTED in part — see §9.** The busyness trend below was measured on a
+> 4-clip set in which busyness was perfectly confounded with clip identity, a
+> limitation flagged at the time. On a 15-clip set spanning busyness 0.004-0.684
+> the trend disappears (`corr(busyness, gain) = -0.297`, bins non-monotonic) and
+> the two worst clips are among the *least* busy. The over-sharpening
+> observation survives; the busyness explanation does not.
+
 `training/eval/busy_eval.py` makes the *frame* the unit instead of the pixel.
 `stratified_eval` pools every frame's texture pixels into one number, which
 cannot distinguish a calm frame with a small detailed region from a frame that
@@ -440,6 +447,66 @@ Downloading real high-resolution video is still worth doing, but for section 7
 rather than section 6a: what is missing there is busyness *coverage* across many
 clips, which stills cannot provide and which 4K adds nothing to on its own — a
 1080p clip already exceeds the 512 crop requirement several times over.
+
+---
+
+## 9. The +1.4 dB advantage is a property of three benchmark clips
+
+Section 7's confound was resolved by adding 11 Xiph/derf clips chosen to span
+scene busyness, giving 15 clips over busyness 0.004-0.684. Re-measuring the
+shipped 2x model at CRF 28, 480 frames, `--height 1024` (no HR enlargement):
+
+| clip set | n | mean gain vs bicubic | sd |
+|---|---|---|---|
+| the 3 original render clips | 96 | **+1.383 dB** | 0.085 |
+| `vsr_test_video` | 32 | -0.416 dB | — |
+| **the 11 newly added clips** | 352 | **-0.077 dB** | 0.345 |
+| all 15 | 480 | +0.192 dB | 0.673 |
+
+**On the new clips the model is worse than bicubic on 162 of 352 frames.** Its
+measured advantage is not a general property of the model; it is a property of
+`bistro_30s`, `chess_30s` and `locomotive_30s`, on which it is remarkably
+consistent (sd 0.085) and remarkably good.
+
+### What separates those three clips
+
+Four candidate explanations were tested and three were rejected outright:
+
+| candidate | test | verdict |
+|---|---|---|
+| busyness | 15 clips over 0.004-0.684 | **rejected**, corr -0.297, non-monotonic |
+| HR reference enlarged by the harness | re-ran at `--height 1024` | **rejected**, the three still win by ~+1.4 |
+| HR already codec-compressed | 8x8 block-energy ratio | **rejected**, those three are the *least* block-aligned |
+| synthetic / denoised source | noise sigma in flat regions | **not rejected**, but incomplete |
+
+The three winners measure **exactly 0.0000** noise in flat regions, as does
+`dinner_1080p30` — which loses 0.475 dB. So zero noise is necessary-looking but
+plainly not sufficient, and the honest position is that *the cause is not yet
+identified*. What is established is the split itself, and that it is large,
+consistent, and aligned with clip provenance rather than with any scene property
+measured so far.
+
+### Why this matters more than the busy-scene question
+
+Every model comparison in this file — the slope in §1, the SPANV2 result in §5a,
+both 4x retrains in §6 and §6a — was scored on `/tank/webvsr/clips`: those three
+clips plus `vsr_test_video`. Their verdicts are internally consistent, because
+all models were ranked on the same set. But the *magnitudes* are not
+transferable, and any claim of the form "the extension gains ~1.4 dB" describes
+three clips rather than the deployment domain.
+
+The user-reported failure — content bad enough to switch the extension off — now
+has a plausible reading that costs nothing to accept: on ordinary camera footage
+the model was never delivering the benchmark's gain in the first place.
+
+**Actions:**
+1. Re-run the model comparisons that matter against `/tank/webvsr/clips_busy`
+   (15 clips) before any further architecture work; the current selection signal
+   is measured on unrepresentative content.
+2. Do not quote +1.4 dB. On the broader set the shipped 2x model is
+   -0.077 dB against bicubic on texture PSNR.
+3. Identify what those three clips have that the others do not. Until that is
+   known, neither set can be assumed to be the representative one.
 
 ---
 
