@@ -1,0 +1,19 @@
+{
+  "2x": {
+    "binary": "extension/models/span_lite_2x_c16.bin",
+    "checkpoint": "checkpoints_c16/deployed_2x_c16.pth",
+    "channels": 16,
+    "scale": 2,
+    "sha256": "a2451c90885207e031ff6ba7f25ebea7209a90eff486545f797cd26f7b3adc77",
+    "origin": "/tank/webvsr/ckpt_c16_sharp2/best_phase1.pth"
+  },
+  "4x": {
+    "binary": "extension/models/span_lite_4x_c16.bin",
+    "checkpoint": "checkpoints_c16x4/best_phase1.pth",
+    "channels": 16,
+    "scale": 4,
+    "sha256": "a0561d5b5da03eb2825a00fc3bdd2066e73f90f622f1e52f197aaceb33a19d5f",
+    "origin": "checkpoints_c16x4/best_phase1.pth"
+  },
+  "_note": "Which checkpoint each shipped .bin was exported from. The .bin files are tracked in git and the .pth files are not, so without this record the two drift silently -- they already did once, and two sessions of evaluation scored a model users do not run. Verify with training/eval/verify_shipped.py before reporting any \"shipped\" number."
+}
