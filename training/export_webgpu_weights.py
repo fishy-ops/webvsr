@@ -26,9 +26,29 @@ from model_span import SPANLite
 
 
 def export_weights(checkpoint_path, output_path, channels=32, scale=2):
-    model = SPANLite(num_in_ch=3, num_out_ch=3, feature_channels=channels, upscale=scale)
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     state = ckpt.get('model', ckpt.get('model_state_dict', ckpt))
+
+    # A multi-exit checkpoint names its blocks "blocks.N" (nn.ModuleList) where
+    # SPANLite uses "block_N". The extra exits are appended AFTER the full-depth
+    # tensors, so an engine that ignores them reads a byte-identical prefix and
+    # the file stays backward compatible.
+    multi_exit = any(k.startswith('blocks.') for k in state)
+    early = []
+    if multi_exit:
+        from model_span_me import SPANLiteME
+        depths = set()
+        n_blocks = 1 + max(int(k.split('.')[1]) for k in state if k.startswith('blocks.'))
+        for k in state:
+            if k.startswith('conv_cat.'):
+                tag = k.split('.')[1]
+                depths.add(n_blocks if tag == 'full' else int(tag.lstrip('d')))
+        model = SPANLiteME(num_in_ch=3, num_out_ch=3, feature_channels=channels,
+                           upscale=scale, exit_depths=tuple(sorted(depths)),
+                           num_blocks=n_blocks)
+        early = [d for d in sorted(depths) if d != max(depths)]
+    else:
+        model = SPANLite(num_in_ch=3, num_out_ch=3, feature_channels=channels, upscale=scale)
     model.load_state_dict(state)
     model.eval()
 
@@ -51,22 +71,32 @@ def export_weights(checkpoint_path, output_path, channels=32, scale=2):
     add('conv_first.bias', model.conv_first.eval_conv.bias)
 
     # 4 SPAB blocks
-    for i, block in enumerate([model.block_1, model.block_2, model.block_3, model.block_4]):
+    blocks = (list(model.blocks) if multi_exit
+              else [model.block_1, model.block_2, model.block_3, model.block_4])
+    for i, block in enumerate(blocks):
         for j, conv in enumerate([block.c1, block.c2, block.c3]):
             add(f'block_{i+1}.c{j+1}.weight', conv.eval_conv.weight)
             add(f'block_{i+1}.c{j+1}.bias', conv.eval_conv.bias)
 
-    # conv_cat (1x1)
-    add('conv_cat.weight', model.conv_cat.weight)
-    add('conv_cat.bias', model.conv_cat.bias)
+    def head(key):
+        """(conv_cat, conv_last, upsampler) for one exit, or the plain model."""
+        if not multi_exit:
+            return model.conv_cat, model.conv_last, model.upsampler
+        return model.conv_cat[key], model.conv_last[key], model.upsampler[key]
 
-    # conv_last (upsampler input)
-    add('conv_last.weight', model.conv_last.eval_conv.weight)
-    add('conv_last.bias', model.conv_last.eval_conv.bias)
+    def add_head(key, suffix=''):
+        cat, last, up = head(key)
+        add(f'conv_cat{suffix}.weight', cat.weight)
+        add(f'conv_cat{suffix}.bias', cat.bias)
+        add(f'conv_last{suffix}.weight', last.eval_conv.weight)
+        add(f'conv_last{suffix}.bias', last.eval_conv.bias)
+        add(f'upsampler{suffix}.weight', up[0].weight)
+        add(f'upsampler{suffix}.bias', up[0].bias)
 
-    # upsampler conv
-    add('upsampler.weight', model.upsampler[0].weight)
-    add('upsampler.bias', model.upsampler[0].bias)
+    # Deepest exit first, so the prefix matches a single-exit export exactly.
+    add_head('full' if multi_exit else None)
+    for d in early:
+        add_head(f'd{d}', f'_d{d}')
 
     # Flatten and save
     all_weights = np.concatenate([w.flatten() for w in weight_list])
@@ -79,7 +109,13 @@ def export_weights(checkpoint_path, output_path, channels=32, scale=2):
     import json as _json
     manifest_path = output_path.rsplit('.', 1)[0] + '.json'
     with open(manifest_path, 'w') as f:
-        _json.dump({"channels": channels, "scale": scale, "blocks": 4}, f)
+        man = {"channels": channels, "scale": scale, "blocks": len(blocks)}
+        if early:
+            # Which early exits trail the deepest one, in file order. An engine
+            # that does not understand this key still reads the full-depth
+            # prefix correctly.
+            man["exits"] = early
+        _json.dump(man, f)
     print(f"Wrote manifest {manifest_path}: channels={channels}")
 
     print(f"Exported {total_params:,} parameters ({total_params * 4 / 1024:.0f} KB)")
