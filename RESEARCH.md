@@ -742,6 +742,70 @@ Selection should consider only the trainable exits.
 
 ---
 
+## 13. Why the three render clips behave differently: bicubic rings on them
+
+Section 9 left this open after rejecting busyness, harness enlargement and prior
+codec compression. The answer was already in the eval output, in a column nobody
+had read across clips: **what bicubic itself does on each one.**
+
+Sharpness ratio against ground truth in the edge bucket, where 1.00 means the
+output carries the same gradient energy as the reference:
+
+| clip | bicubic | shipped | |
+|---|---|---|---|
+| locomotive_30s | **2.442** | 1.514 | render |
+| bistro_30s | **2.313** | 1.614 | render |
+| chess_30s | **1.873** | 1.382 | render |
+| dinner_1080p30 | 1.020 | 1.056 | |
+| vsr_test_video | 1.007 | 0.963 | |
+| life_1080p30 | 0.833 | 0.694 | |
+| ducks_take_off | 0.780 | 0.784 | |
+| in_to_tree_1080p50 | 0.290 | 0.269 | |
+
+**On the three render clips bicubic emits 1.9-2.4x the gradient energy of the
+reference.** That is not softness, it is *ringing* — overshoot at edges. Every
+real-camera clip sits at or below 1.0, where bicubic is merely soft, which is
+what bicubic normally does.
+
+The renders are anti-aliased synthetic images: their edges are smooth,
+band-limited ramps. Downscale and compress one, upsample it bicubically, and the
+result overshoots those ramps badly. The model does not overshoot, so it recovers
+2.44 -> 1.51 and books a large win.
+
+**So the model's headline advantage on these clips is mostly ringing
+suppression, not super-resolution.** It is winning against a baseline that is
+failing unusually badly, rather than restoring unusual amounts of detail.
+
+That also explains where the gain sits. Averaged over the two groups:
+
+| group | flat | edge | texture | bicubic edge PSNR |
+|---|---|---|---|---|
+| 3 renders | — | +0.21 | **+1.32** | 39.76 |
+| 12 real | -0.02 | +0.00 | **-0.09** | 30.14 |
+
+The renders' texture is synthetic: regular, band-limited, and therefore
+predictable by a small convolutional model. Natural texture — foliage, crowds,
+water, grain — is stochastic, destroyed by quantisation, and unrecoverable. This
+is exactly the argument of §1, with content type as the axis instead of
+compression level.
+
+**Consequences.**
+
+1. `dinner_1080p30` is no longer anomalous. It has zero sensor noise like the
+   renders, but it is camera footage, so bicubic does not ring on it (1.020) and
+   there is nothing for the model to fix.
+2. **A benchmark should not be built from rendered content**, because it measures
+   ringing suppression on a baseline that misbehaves there. The 15-clip set stays
+   the reference set; the three renders are worth keeping only as a labelled
+   subset.
+3. If ringing suppression is a genuine strength, it is worth knowing *where else*
+   bicubic rings — animation, screen content, game capture and UI are all
+   band-limited and anti-aliased in the same way. That is a plausible content
+   niche where this model is strong for a reason that now has a mechanism, and
+   it is untested.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
