@@ -650,6 +650,13 @@ builds return the same pass count.
 
 ## 11. Re-scored on 15 clips: the perceptual win is real, the PSNR win is not
 
+> **The model called "shipped" below is not the one the extension ships — see
+> §14.** Every figure in this section describes
+> `checkpoints_c16/best_phase2.pth`. The deployed binary was exported from a
+> different checkpoint. The section's *reasoning* stands and its comparisons
+> between candidates are still valid, but its magnitudes belong to a model users
+> do not run.
+
 Section 9's action item, executed. Shipped 2x against bicubic on the 15-clip set
 at `--height 1024`, 32 frames per clip, full metric suite.
 
@@ -803,6 +810,65 @@ compression level.
    band-limited and anti-aliased in the same way. That is a plausible content
    niche where this model is strong for a reason that now has a mechanism, and
    it is untested.
+
+---
+
+## 14. The wrong checkpoint is deployed, and it is the weaker one
+
+Verifying the multi-exit export byte-for-byte turned up something else: the
+`.bin` files are tracked in git, the `.pth` checkpoints are not, and nothing
+recorded which produced which. They had drifted.
+
+`extension/models/span_lite_2x_c16.bin` was exported from
+`ckpt_c16_sharp2/best_phase1.pth`. Every 2x evaluation across two sessions —
+§9, §11, §12, §13 — scored `checkpoints_c16/best_phase2.pth` instead. The 4x
+binary does trace to `checkpoints_c16x4/best_phase1.pth`, which the 4x
+evaluations already used, so only 2x was affected.
+
+Both models against bicubic, 15 clips, CRF 28:
+
+| | DISTS | texture PSNR | overall PSNR | tLP | sharpness |
+|---|---|---|---|---|---|
+| bicubic | 0.1735 | 24.985 | 28.169 | -0.01282 | 0.6784 |
+| **deployed** (`sharp2`) | 0.1717 | **25.461** | **28.603** | -0.01060 | 0.6866 |
+| the one evaluated (`best_phase2`) | **0.1629** | 25.182 | 28.359 | **-0.00982** | **0.7374** |
+
+**The deployed model beats bicubic by 1.0% DISTS, not the 6.1% reported.** Split
+by clip origin, the gap is worse than that average suggests:
+
+| clip group | deployed | evaluated |
+|---|---|---|
+| 3 render clips | +10.1% DISTS, 3/3 | +16.2% DISTS, 3/3 |
+| **12 real-camera clips** | **-1.2% DISTS, 7/12** | **+3.7% DISTS, 10/12** |
+| all 15 | +1.1%, 10/15 | +6.2%, 13/15 |
+
+**On real camera footage the deployed model is perceptually worse than bicubic**,
+by 1.2%, winning 7 of 12 clips — a coin flip. Its whole measured advantage is
+the ringing suppression on synthetic content that §13 explains.
+
+**The checkpoint that was merely being evaluated is the better one on real
+content**, on both metrics that transfer: DISTS +3.7% against -1.2%, and flicker
++0.0030 against +0.0018. It loses only on PSNR (+0.20 dB against +0.48 dB) —
+the axis §11 established does not transfer.
+
+That inverts how the two look under PSNR selection, which is the most likely way
+the wrong one came to be shipped: `sharp2` is the better model by distortion and
+the worse one by perception, and v1.0.2 was chosen before the 15-clip set
+existed, on the 4-clip benchmark the renders dominate.
+
+**Actions.**
+
+1. `extension/models/PROVENANCE.json` now records checkpoint, channels, scale
+   and binary sha256 for each shipped model; `training/eval/verify_shipped.py`
+   re-exports and byte-compares, so the mapping is proved rather than asserted.
+   Run it before reporting any "shipped" number — `--spec` prints the eval model
+   spec so a chain script cannot point somewhere else by hand.
+2. **Consider shipping `checkpoints_c16/best_phase2.pth` instead**, pending
+   confirmation at CRF 20 and 36. On the evidence here it is better on the two
+   metrics that generalise and worse only on the one that does not.
+3. Nothing in §§9-13 needs re-deriving. Those sections compare candidates against
+   each other on one consistent reference, and that comparison is unaffected.
+   What changes is any sentence of the form "the shipped model scores X".
 
 ---
 
