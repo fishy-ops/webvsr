@@ -690,6 +690,58 @@ temporal improvement, and PSNR should stop being quoted as the benefit.
 
 ---
 
+## 12. Adaptive depth: a usable 41%-cheaper exit, and what it costs
+
+Two multi-exit runs. The first co-adapted the shared trunk (8 frozen epochs, then
+joint); the second froze the trunk for all 60 epochs and trained only the early
+heads, on codec-domain degradation rather than the legacy JPEG chain.
+
+| | take 1 d4 | take 2 d4 | take 1 d2 | take 2 d2 |
+|---|---|---|---|---|
+| DISTS @ CRF 28 | 0.1674 | **0.1629** | 0.1668 | **0.1661** |
+
+**Freezing the trunk is the whole result.** In take 2 `d4` is *identical* to the
+shipped model on every metric at every CRF — not close, identical — because the
+deep head and trunk never moved. Take 1's co-adaptation cost the deep exit 2.8%
+DISTS and bought the shallow exit essentially nothing. The early exit should be
+built as an addition, never as a joint retrain.
+
+Take 2, 15 clips, `--height 1024`:
+
+| CRF | model | DISTS | vs bicubic | texture PSNR | tLP | sharpness |
+|-----|-------|-------|------------|--------------|-----|-----------|
+| 20 | bicubic | 0.1309 | — | 26.932 | -0.01421 | 0.7640 |
+| 20 | shipped / d4 | 0.1192 | +8.9% | 27.087 | -0.01186 | 0.8166 |
+| 20 | **d2** | 0.1234 | **+5.7%** | 26.691 | -0.01579 | 0.7197 |
+| 28 | bicubic | 0.1735 | — | 24.985 | -0.01282 | 0.6783 |
+| 28 | shipped / d4 | 0.1629 | +6.1% | 25.181 | -0.00982 | 0.7374 |
+| 28 | **d2** | 0.1661 | **+4.3%** | 24.884 | -0.01439 | 0.6435 |
+
+**The trade is slightly better than proportional**: the shallow exit keeps ~64%
+of the perceptual gain for 59% of the compute.
+
+**But it flickers more than bicubic** (-0.01439 against -0.01282 at CRF 28) and is
+softer than bicubic too (0.6435 against 0.6783). Given §11 found flicker to be the
+only advantage that transfers across content types, a cheap mode that *worsens*
+it is a real trade. Depth 2 is a thermal/battery fallback, not a default.
+
+### Two process findings from the same run
+
+**Phase 1 improved PSNR and degraded perception, monotonically.** Over nine
+validations the shallow exit went 28.87 -> 29.57 dB while its DISTS went
+0.2382 -> 0.2436. Phase 2's perceptual loss reversed it, giving up 0.15 dB to
+recover 0.007 DISTS. Selecting that run on PSNR would have picked its worst
+perceptual checkpoint.
+
+**Selecting on the worst exit goes degenerate when an exit is frozen.** `d4`'s
+score never changes, so it is permanently the worst once `d2` passes it, and
+selection stops tracking the head that is actually training — it was driven by
+numerical jitter in the frozen exit (0.2388-0.2391 between identical
+evaluations). It cost 0.0006 DISTS here, which is luck rather than design.
+Selection should consider only the trainable exits.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
