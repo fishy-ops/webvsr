@@ -65,16 +65,22 @@ const FUSE_ATTN = (typeof globalThis !== "undefined"
 
 // Weight tensors in export order (matches export_webgpu_weights.py), for a
 // SPAN-Lite with C feature channels. [name, outC, inC, k]
-function weightSpec(C, scale) {
+function weightSpec(C, scale, exits = []) {
+  const head = (sfx) => [
+    [`conv_cat${sfx}`, C, 4 * C, 1],
+    [`conv_last${sfx}`, C, C, 3],
+    [`upsampler${sfx}`, 3 * scale * scale, C, 3],
+  ];
+  // Early-exit heads trail the full-depth model, matching
+  // export_webgpu_weights.py. A file without them simply ends after the prefix.
   return [
     ['conv_first', C, 3, 3],
     ['b1c1', C, C, 3], ['b1c2', C, C, 3], ['b1c3', C, C, 3],
     ['b2c1', C, C, 3], ['b2c2', C, C, 3], ['b2c3', C, C, 3],
     ['b3c1', C, C, 3], ['b3c2', C, C, 3], ['b3c3', C, C, 3],
     ['b4c1', C, C, 3], ['b4c2', C, C, 3], ['b4c3', C, C, 3],
-    ['conv_cat', C, 4 * C, 1],
-    ['conv_last', C, C, 3],
-    ['upsampler', 3 * scale * scale, C, 3],   // PixelShuffle(scale): 3·scale² channels
+    ...head(''),                              // PixelShuffle(scale): 3·scale² channels
+    ...exits.flatMap((d) => head(`_d${d}`)),
   ];
 }
 
@@ -148,6 +154,8 @@ class WebGPUSR {
     for (const k in this.w) { this.w[k].weight?.destroy?.(); this.w[k].bias?.destroy?.(); }
     this.w = {};
     this.C = 32; this.scale = 2;
+    this.exits = [];        // early-exit depths this model carries, if any
+    this.depth = null;      // null = deepest exit
     this._modelUrl = url;
     // Optional sibling manifest (e.g. span_lite_2x.json) sets the channel count.
     try {
@@ -157,6 +165,7 @@ class WebGPUSR {
         const m = await mResp.json();
         if (m.channels) this.C = m.channels | 0;
         if (m.scale) this.scale = m.scale | 0;
+        if (Array.isArray(m.exits)) this.exits = m.exits.map((d) => d | 0);
       }
     } catch (_) { /* no manifest → keep defaults (32ch, 2×) */ }
     this._buildPipelines();
@@ -167,7 +176,7 @@ class WebGPUSR {
     // In f16 mode, convert each tensor to half-float bytes before upload.
     const toBytes = (sub) => this.f16 ? f32ArrayToF16(sub) : sub;
     let off = 0;
-    for (const [name, outC, inC, k] of weightSpec(this.C, this.scale)) {
+    for (const [name, outC, inC, k] of weightSpec(this.C, this.scale, this.exits)) {
       const wLen = outC * inC * k * k;
       const bLen = outC;
       const wBuf = this.device.createBuffer({
@@ -377,6 +386,31 @@ class WebGPUSR {
       ['conv', conv(B.catout, 'upsampler', B.up, C, 3 * this.scale * this.scale, 3, 0), 3 * this.scale * this.scale],
     ];
 
+    // Depth-2 exit, when the model carries one. Two blocks instead of four, so
+    // blocks 3 and 4 are never dispatched -- 12 dispatches against 18.
+    //
+    // Buffer plan differs from the full path: the depth-2 head concatenates
+    // block 2's MID output, which the full path overwrites, so it is parked in
+    // mid3 (unused at this depth) rather than in a scratch buffer.
+    this.passes2 = null;
+    if (this.exits.includes(2) && FUSE_ATTN && this.w.conv_cat_d2) {
+      this.passes2 = [
+        ['conv', conv(B.x3, 'conv_first', B.f0, 3, C, 3, 0), C],
+        // block 1: in f0 -> out sB
+        ['conv', conv(B.f0, 'b1c1', B.mid1, C, C, 3, 1), C],
+        ['conv', conv(B.mid1, 'b1c2', B.sA, C, C, 3, 1), C],
+        ['convattn', convAttn(B.sA, 'b1c3', B.f0, B.sB, C, C, 3), C],
+        // block 2: in sB -> out sC, with its mid kept in mid3 for the head
+        ['conv', conv(B.sB, 'b2c1', B.mid3, C, C, 3, 1), C],
+        ['conv', conv(B.mid3, 'b2c2', B.sA, C, C, 3, 1), C],
+        ['convattn', convAttn(B.sA, 'b2c3', B.sB, B.sC, C, C, 3), C],
+        // depth-2 head
+        ['conv', conv(B.sC, 'conv_last_d2', B.bb4, C, C, 3, 0), C],
+        ['cat', this._catBG('_d2'), C],
+        ['conv', conv(B.catout, 'upsampler_d2', B.up, C, 3 * this.scale * this.scale, 3, 0), 3 * this.scale * this.scale],
+      ];
+    }
+
     // PixelShuffle -> neural output texture
     this.shuffleBG = d.createBindGroup({
       layout: P.shuffle.getBindGroupLayout(0),
@@ -410,7 +444,22 @@ class WebGPUSR {
     });
   }
 
-  _catBG() {
+  /** Choose which exit to run. null (or an unavailable depth) = deepest.
+   *  Returns the depth actually in effect. */
+  setDepth(depth) {
+    this.depth = (depth === 2 && this.passes2) ? 2 : null;
+    return this.depth ?? 4;
+  }
+
+  /** Depths this model can run. Answerable right after loadWeights, before
+   *  configure() has built the pass lists -- callers decide what to offer
+   *  before they have a resolution. */
+  availableDepths() {
+    const ok = FUSE_ATTN && this.exits.includes(2) && !!this.w.conv_cat_d2;
+    return ok ? [2, 4] : [4];
+  }
+
+  _catBG(sfx = '') {
     const d = this.device, B = this.buf, W = this.w;
     return d.createBindGroup({
       layout: this.pipe.cat.getBindGroupLayout(0),
@@ -419,8 +468,8 @@ class WebGPUSR {
         { binding: 1, resource: { buffer: B.mid1 } },
         { binding: 2, resource: { buffer: B.mid3 } },
         { binding: 3, resource: { buffer: B.bb4 } },
-        { binding: 4, resource: { buffer: W.conv_cat.weight } },
-        { binding: 5, resource: { buffer: W.conv_cat.bias } },
+        { binding: 4, resource: { buffer: W[`conv_cat${sfx}`].weight } },
+        { binding: 5, resource: { buffer: W[`conv_cat${sfx}`].bias } },
         { binding: 6, resource: { buffer: B.catout } },
         { binding: 7, resource: { buffer: this._u([this.inW, this.inH, 4 * this.C, this.C]) } },
       ],
@@ -459,7 +508,8 @@ class WebGPUSR {
     pass.setBindGroup(0, preBG);
     pass.dispatchWorkgroups(gx16, gy16, 1);
 
-    for (const [key, bg, oc] of this.passes) {
+    const passes = (this.depth === 2 && this.passes2) ? this.passes2 : this.passes;
+    for (const [key, bg, oc] of passes) {
       pass.setPipeline(this.pipe[key]);
       pass.setBindGroup(0, bg);
       if (key === 'attn') pass.dispatchWorkgroups(gx16, gy16, oc);        // per-channel (oc = C)
