@@ -52,10 +52,32 @@ class FFTLoss(nn.Module):
         return F.l1_loss(torch.abs(pred_fft), torch.abs(target_fft))
 
 
-class CombinedLoss(nn.Module):
-    """L_total = 1.0 * L_charbonnier + w_perceptual * L_perceptual + w_fft * L_fft"""
+class DISTSLoss(nn.Module):
+    """DISTS as a training term, not only a selection metric.
 
-    def __init__(self, w_perceptual=0.1, w_fft=0.01, use_perceptual=True):
+    Checkpoints here are chosen on DISTS but nothing in the loss ever pointed at
+    it, so training optimised one thing and selection rewarded another. DISTS is
+    differentiable and compares texture *statistics* rather than pixels, which is
+    the property L1 lacks -- it does not collapse toward the conditional mean, so
+    unlike a heavier pixel term it should not push the model toward blur.
+    """
+
+    def __init__(self):
+        super().__init__()
+        from DISTS_pytorch import DISTS
+        self.d = DISTS()
+        for p_ in self.d.parameters():
+            p_.requires_grad_(False)
+
+    def forward(self, pred, target):
+        return self.d(pred.clamp(0, 1), target.clamp(0, 1)).mean()
+
+
+class CombinedLoss(nn.Module):
+    """L_total = L_charbonnier + w_perceptual*L_perc + w_fft*L_fft + w_dists*L_dists"""
+
+    def __init__(self, w_perceptual=0.1, w_fft=0.01, use_perceptual=True,
+                 w_dists=0.0):
         super().__init__()
         self.l1 = CharbonnierLoss()
         self.perceptual = PerceptualLoss() if use_perceptual else None
@@ -63,19 +85,23 @@ class CombinedLoss(nn.Module):
         self.w_perceptual = w_perceptual
         self.w_fft = w_fft
         self.use_perceptual = use_perceptual
+        self.w_dists = w_dists
+        self.dists = DISTSLoss() if w_dists > 0 else None
 
     def forward(self, pred, target):
         loss_l1 = self.l1(pred, target)
         loss_fft = self.fft(pred, target)
         total = loss_l1 + self.w_fft * loss_fft
+        parts = {"l1": loss_l1.item(), "fft": loss_fft.item()}
 
         if self.use_perceptual and self.perceptual is not None:
             loss_perc = self.perceptual(pred, target)
             total = total + self.w_perceptual * loss_perc
-            return total, {
-                "l1": loss_l1.item(),
-                "perceptual": loss_perc.item(),
-                "fft": loss_fft.item(),
-            }
+            parts["perceptual"] = loss_perc.item()
 
-        return total, {"l1": loss_l1.item(), "fft": loss_fft.item()}
+        if self.dists is not None:
+            loss_dists = self.dists(pred, target)
+            total = total + self.w_dists * loss_dists
+            parts["dists"] = loss_dists.item()
+
+        return total, parts

@@ -95,6 +95,45 @@ def _make_dists(device):
         return None
 
 
+class EMA:
+    """Exponential moving average of weights.
+
+    Every top NTIRE 2026 efficient-SR team used this, the winner on the same
+    SPAN family at decay 0.999. It costs one extra weight buffer and an
+    in-place lerp per step, and it is evaluated and saved in place of the raw
+    weights -- the running average is the model, the live weights are only how
+    it gets there.
+    """
+
+    def __init__(self, model, decay=0.999):
+        self.decay = decay
+        self.shadow = {k: v.detach().clone().float()
+                       for k, v in model.state_dict().items()
+                       if v.dtype.is_floating_point}
+
+    @torch.no_grad()
+    def update(self, model):
+        for k, v in model.state_dict().items():
+            if k in self.shadow:
+                self.shadow[k].mul_(self.decay).add_(v.detach().float(),
+                                                    alpha=1.0 - self.decay)
+
+    @torch.no_grad()
+    def swap_in(self, model):
+        """Install the average, returning the live weights for restoration."""
+        sd = model.state_dict()
+        backup = {k: sd[k].detach().clone() for k in self.shadow}
+        for k, v in self.shadow.items():
+            sd[k].copy_(v.to(sd[k].dtype))
+        return backup
+
+    @torch.no_grad()
+    def restore(self, model, backup):
+        sd = model.state_dict()
+        for k, v in backup.items():
+            sd[k].copy_(v)
+
+
 def validate(model, val_loader, device, dists_fn=None, depth=None):
     """Validate one exit. `depth` selects it on a multi-exit model.
 
@@ -210,6 +249,21 @@ def train():
     # so joint training from epoch 0 lets their gradients degrade the deep
     # exit -- measured as 37.37 -> 35.91 dB across one epoch. Train the new
     # heads against a frozen trunk first, then unfreeze.
+    # Flicker is the only advantage that transfers across content types
+    # (RESEARCH.md 11), and nothing in this loss function targets it. This does:
+    # two independent degradations of one HR crop stand in for two frames of
+    # near-identical content, and the model is penalised for answering them
+    # differently. Costs a second forward pass per step.
+    parser.add_argument("--twin-consistency", type=float, default=0.0,
+                        help="weight on |f(lr) - f(lr')| for two degradations "
+                             "of the same crop; 0 disables and costs nothing")
+    parser.add_argument("--ema-decay", type=float, default=0.0,
+                        help="EMA decay for weights; 0 disables. 0.999 is what "
+                             "the NTIRE 2026 winner used on this architecture")
+    parser.add_argument("--w-dists", type=float, default=0.0,
+                        help="weight on DISTS as a training term. Checkpoints "
+                             "are selected on DISTS but nothing in the loss "
+                             "pointed at it; 0 keeps the old behaviour")
     parser.add_argument("--lr", type=float, default=None,
                         help="override CONFIG['lr']; the 5e-4 default is a "
                              "from-scratch rate and will damage a converged "
@@ -281,18 +335,25 @@ def train():
         feature_channels=cfg["feature_channels"],
         **_kw,
     ).to(device)
+    ema = EMA(model, args.ema_decay) if args.ema_decay > 0 else None
+    if ema:
+        print(f"EMA enabled, decay {args.ema_decay}")
     multi_exit = args.arch == "spanme"
     if multi_exit:
         print(f"multi-exit depths {model.exit_depths}, aux weight {args.aux_weight}")
     print(f"SPAN-Lite: {count_params(model):,} trainable parameters")
 
     # ── Data ────────────────────────────────────────────────────────
+    twin = args.twin_consistency > 0
+    if twin:
+        print(f"twin consistency: weight {args.twin_consistency}")
     train_dataset = SRDataset(
         data_dirs=cfg["train_dirs"],
         degrade_fn=degrade_fn,
         crop_size=cfg["crop_size"],
         scale=cfg["scale"],
         use_degradation=True,
+        twin=twin,
     )
     val_dataset = ValidationDataset(
         data_dir=cfg["val_dir"],
@@ -395,6 +456,7 @@ def train():
         # Build loss for current phase
         use_perceptual = (current_phase == 2)
         criterion = CombinedLoss(
+            w_dists=args.w_dists,
             w_perceptual=cfg["w_perceptual"],
             w_fft=cfg["w_fft"],
             use_perceptual=use_perceptual,
@@ -422,7 +484,12 @@ def train():
 
         optimizer.zero_grad()
 
-        for batch_idx, (lr, hr) in enumerate(train_loader):
+        for batch_idx, batch in enumerate(train_loader):
+            if twin:
+                lr, lr2, hr = batch
+                lr2 = lr2.to(device, non_blocking=True)
+            else:
+                lr, hr = batch
             lr, hr = lr.to(device, non_blocking=True), hr.to(device, non_blocking=True)
 
             with autocast(device_type="cuda", dtype=torch.float16):
@@ -446,6 +513,25 @@ def train():
                         sr = F.interpolate(sr, size=hr.shape[2:], mode="bicubic",
                                            align_corners=False).clamp(0, 1)
                     loss, components = criterion(sr, hr)
+
+                if twin:
+                    # Same HR, so any disagreement between the two outputs is
+                    # error by construction -- no ground truth needed for this
+                    # term. L1 rather than L2: flicker shows up as a few pixels
+                    # moving a lot, which a squared penalty would let dominate.
+                    sr2 = model(lr2)
+                    if multi_exit:
+                        sr2 = sr2.clamp(0, 1)
+                    else:
+                        sr2 = sr2.clamp(0, 1)
+                    if sr2.shape != sr.shape:
+                        sr2 = F.interpolate(sr2, size=sr.shape[2:], mode="bicubic",
+                                            align_corners=False).clamp(0, 1)
+                    tc = (sr - sr2).abs().mean()
+                    loss = loss + args.twin_consistency * tc
+                    components = dict(components)
+                    components["twin"] = float(tc.detach())
+
                 loss = loss / cfg["accumulation_steps"]
 
             scaler.scale(loss).backward()
@@ -457,6 +543,8 @@ def train():
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
+                if ema:
+                    ema.update(model)
 
             epoch_loss += loss.item() * cfg["accumulation_steps"]
             for k, v in components.items():
@@ -472,6 +560,11 @@ def train():
         # Validate every 5 epochs or last epoch of each phase
         val_psnr = 0
         val_dists = None
+        # From here to the end of the epoch the model carries the averaged
+        # weights: validating one set and saving another would make the
+        # selection metric describe a checkpoint that was never written.
+        ema_backup = ema.swap_in(model) if ema else None
+
         if epoch % 5 == 0 or epoch == cfg["phase1_epochs"] - 1 or epoch == cfg["total_epochs"] - 1:
             if multi_exit:
                 # Score every exit and select on the WORST of them. A multi-exit
@@ -539,6 +632,9 @@ def train():
                 model, optimizer, scheduler, scaler, epoch, best_psnr,
                 current_phase, milestone
             )
+
+        if ema_backup is not None:
+            ema.restore(model, ema_backup)
 
     print(f"\nTraining complete. Best PSNR: {best_psnr:.2f} dB")
 
