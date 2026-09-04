@@ -1057,6 +1057,48 @@ Left in behind `FOLD_CONV_LAST`, defaulting off.
 
 ---
 
+## 19. Training on the codecs browsers decode: better perceptually, worse temporally
+
+§16 changed the degradation chain from x264/x265/mpeg4 to a mix including VP9 and
+AV1, on the grounds that a browser extension meets what YouTube serves. Retrained
+from the newly-shipped checkpoint, 40 epochs, everything else held constant.
+
+On the **12 real-camera clips**, DISTS against bicubic:
+
+| CRF | shipped | codec-retrained | shipped tLP | retrained tLP |
+|-----|---------|-----------------|-------------|---------------|
+| 20 | +5.7%, 10/12 | **+7.9%, 11/12** | +0.0022 | +0.0012 |
+| 28 | +3.7%, 10/12 | **+5.1%, 11/12** | +0.0030 | +0.0008 |
+| 36 | +2.5%, 10/12 | **+3.7%, 11/12** | +0.0036 | +0.0009 |
+
+**It wins on DISTS at every CRF and takes an extra clip at every CRF.** The
+degradation domain was genuinely wrong, and fixing it was worth 1.2-2.2
+percentage points on the metric this project selects on.
+
+**But it gives up most of the flicker advantage.** At CRF 36 the shipped model's
+tLP improvement over bicubic is +0.0036 and the retrained model's is +0.0009 —
+roughly three quarters of it gone. It is also less sharp (0.7775 against 0.8166
+at CRF 20).
+
+Those three facts are consistent with one description: **the retrained model is
+smoother**, spatially and temporally, and DISTS rewards that on camera footage
+while |tLP| and the sharpness ratio penalise it. VP9 and AV1 smear where x264
+blocks, so a model fitted to them learns a gentler correction.
+
+**Not swapped.** The DISTS gain is real and consistent, but §11 established that
+flicker is the one advantage that transfers across content types, and this trades
+away three quarters of it. Trading the metric that generalises for the metric
+that is easier to move is the mistake this project already made once, in the
+opposite direction, when it shipped on PSNR.
+
+The right resolution is not to pick one — it is to get both, which is what the
+masked twin-consistency run (§12, fixed) is for: it targets flicker directly and
+composes with this change. If it holds the DISTS gain while recovering tLP, the
+swap becomes obvious. If it does not, the choice needs to be made deliberately
+rather than by whichever run finished last.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
