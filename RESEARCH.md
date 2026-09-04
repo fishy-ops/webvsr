@@ -1287,6 +1287,11 @@ principle.
 
 ## 24. Flicker does not rank models consistently across content
 
+> **Explained by §28.** The inconsistency is an artifact of comparing clip-set
+> *means*: between-clip tLP variance is seven times the between-model difference,
+> so a mean over any 12 clips is dominated by which clips are in it. Compared
+> *paired*, the two sets agree and the ordering is stable.
+
 > **Partly an artifact — see §26.** The benchmark side of this comparison
 > used the raw tLP difference while the held-out side used |tLP|. Corrected,
 > the benchmark says the two models are near-tied rather than clearly
@@ -1499,6 +1504,57 @@ alternative won on everything. This is not that. Trading a measurable temporal
 regression for a measurable perceptual gain is a product judgement about which
 artifact a viewer minds more, and no metric here answers it. The comparison is
 recorded; the choice belongs to whoever owns the product.
+
+---
+
+## 28. tLP has to be compared paired, and the flicker regression is real
+
+§24 asked why two clip sets disagreed about which model flickers less, and §27
+recorded a trade-off resting on that comparison. Both compared **means of tLP
+over clips**. Measured per clip at CRF 28, that was never a valid test.
+
+| | |
+|---|---|
+| between-clip spread of \|tLP\| | sd **0.01368** |
+| shipped vs webcodec difference | **0.00123** |
+| SEM of a 12-clip mean | 0.00400 |
+| the difference, in SEM | **0.31** |
+
+Per-clip tLP runs from -0.045 (`park_joy`) to +0.013 (`blue_sky`) — a spread
+seven times larger than any difference between the models. A mean over twelve
+clips is therefore dominated by *which clips are in the set*, which is exactly
+§24's finding: change the set, change the ordering, learn nothing about the
+models.
+
+**Compared paired — same clip, two models — the clip effect cancels:**
+
+| | |
+|---|---|
+| mean paired difference | **-0.00122** |
+| SEM | 0.00053 |
+| t | **-2.30** on 11 df |
+| shipped better on | **11 of 12 clips** |
+
+**The flicker regression is real.** The codec-retrained model is genuinely worse
+on temporal deviation, consistently, on nearly every clip. §27's decision to hold
+the swap was right — but the test it rested on could not have shown that, and the
+right answer came out of an invalid comparison.
+
+**Also explains §26's confusion.** The 5%-at-CRF-20 against 82%-at-CRF-28 gap
+that looked like CRF dependence is the same artifact: two noisy means, differing
+by 0.31 SEM in one case and rather more in the other, neither resolvable. There
+is no evidence the flicker cost actually depends on CRF.
+
+**Rule: never compare tLP as a difference of clip-set means.** Compare per clip
+and aggregate the differences. The same applies to any metric whose between-clip
+variance dwarfs its between-model variance — DISTS does not have this problem
+(its per-clip differences are large relative to the spread), which is why the
+DISTS conclusions all night have been stable across sets while the flicker ones
+were not.
+
+**Motion is a partial contributor, not the explanation.** `corr(motion, |tLP|)`
+is +0.36, so faster clips do carry larger tLP magnitudes — but that accounts for
+about 13% of the variance. The dominant term is simply that clips differ.
 
 ---
 
