@@ -277,6 +277,15 @@ def train():
                         help="weight on DISTS as a training term. Checkpoints "
                              "are selected on DISTS but nothing in the loss "
                              "pointed at it; 0 keeps the old behaviour")
+    # LDL (CVPR 2022) weights the pixel loss by where the residual is locally
+    # erratic. MEASURED on a synthetic blur failure: flat 0.18, stochastic
+    # texture 1.13, clean edge 4.28 -- so it is an error-concentration weighting
+    # that favours EDGES, not the texture weighting it is often described as.
+    # Texture still gets 6.3x flat, and §13 says edges are where this model
+    # already earns its keep, so the direction is defensible -- but it is not
+    # precisely aimed at §21's remaining failure, which is stochastic texture.
+    parser.add_argument("--w-ldl", type=float, default=0.0,
+                        help="weight on the LDL artifact-map-weighted pixel loss")
     parser.add_argument("--lr", type=float, default=None,
                         help="override CONFIG['lr']; the 5e-4 default is a "
                              "from-scratch rate and will damage a converged "
@@ -470,6 +479,7 @@ def train():
         use_perceptual = (current_phase == 2)
         criterion = CombinedLoss(
             w_dists=args.w_dists,
+            w_ldl=args.w_ldl,
             w_perceptual=cfg["w_perceptual"],
             w_fft=cfg["w_fft"],
             use_perceptual=use_perceptual,
