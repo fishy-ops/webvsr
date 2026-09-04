@@ -987,6 +987,35 @@ redirect, which handles both.
 
 ---
 
+## 17. Swapped the shipped 2x model
+
+§14 found the extension shipped `ckpt_c16_sharp2/best_phase1.pth` while every
+evaluation scored `checkpoints_c16/best_phase2.pth`. Measured across all three
+CRFs on the 15-clip set, split by clip origin, DISTS against bicubic:
+
+| CRF | deployed (camera) | candidate (camera) | deployed (render) | candidate (render) |
+|---|---|---|---|---|
+| 20 | **-1.6%**, 8/12 | **+5.7%**, 10/12 | +16.1% | +21.3% |
+| 28 | **-1.2%**, 7/12 | **+3.7%**, 10/12 | +10.1% | +16.2% |
+| 36 | **-0.9%**, **4/12** | **+2.5%**, 10/12 | +3.7% | +9.9% |
+
+**The deployed model was perceptually worse than bicubic on real camera footage
+at every compression level**, and at CRF 36 it beat bicubic on only 4 of 12
+clips. The candidate wins 10 of 12 at every CRF and is better on both clip
+groups, on DISTS and on |tLP|. It gives up 0.3-0.5 dB of texture PSNR, on the
+axis §11 showed does not transfer.
+
+`extension/models/span_lite_2x_c16.bin` is now exported from
+`checkpoints_c16/best_phase2.pth`, `PROVENANCE.json` records the swap, and
+`verify_shipped.py` confirms the binary traces to it. The previous weights are
+kept at `checkpoints_c16/deployed_2x_c16.pth`, so reverting is one re-export.
+
+Note what this was *not*: no retraining, no architecture change. The improvement
+was a checkpoint that already existed in the repo and had been measured against
+for two sessions without anyone noticing it was not the one shipping.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
