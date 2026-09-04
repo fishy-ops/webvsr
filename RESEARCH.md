@@ -872,6 +872,67 @@ existed, on the 4-clip benchmark the renders dominate.
 
 ---
 
+## 15. Prior art on GitHub, which the arXiv-only search missed
+
+§5 notes that arXiv was the wrong corpus for the engineering questions. The
+correction was never made: the research stayed on arXiv, and the working code
+that talented people publish went unread. Three things found in one pass.
+
+### Anime4K designed around the split we measured in §13
+
+[bloc97/Anime4K](https://github.com/bloc97/Anime4K) (MIT) is a real-time line
+reconstruction upscaler, ~3ms on a Vega 64, temporally coherent by construction
+because it is a deterministic local operator with no state. Its README states it
+is optimised for native 1080p anime and explicitly **not** for content with
+"film grain, older MPEG compression artifacts".
+
+That is §13's finding from the other direction. We measured that this model wins
+on anti-aliased, band-limited content where bicubic rings (+10-16% DISTS) and is
+worth roughly nothing on natural camera footage (+1%, and -1.2% for the deployed
+model). Anime4K's authors reached the same content boundary and responded by
+**specialising**: a line detector gates the enhancement so gradient maximisation
+is applied near lines rather than indiscriminately, and one iteration of targeted
+FXAA on those lines suppresses the ringing it would otherwise introduce.
+
+**This suggests the strategic option this project has not considered: stop trying
+to be a general upscaler.** The measurements say we are a strong line/edge
+restorer and a break-even general one. A content gate — run the network where it
+helps, fall back to bicubic where it does not — would raise average delivered
+quality *and* cut GPU time, rather than trading one for the other.
+
+And §13 already supplies the detector. The mechanism there was that **bicubic
+rings on this content**, 1.9-2.4x the ground truth's gradient energy at edges
+against <=1.0 on camera footage. Ringing is measurable from the upscaled frame
+alone, with no reference: compare gradient energy at edges against the
+neighbourhood. High ringing means band-limited content, which means the model
+earns its time. That is a cheap per-scene classifier built out of a number we
+already compute.
+
+Related and directly useful to the engine:
+[SegaraRai/anime4k-wgpu](https://github.com/SegaraRai/anime4k-wgpu) is a
+WGSL/wgpu port — the same shader language this engine is written in.
+
+### Temporal consistency: my twin loss was the version without motion
+
+The VSR work that targets flicker ([StableVSR](https://github.com/claudiom4sir/stablevsr),
+[MGLD-VSR](https://github.com/IanYeung/MGLD-VSR)) uses a **flow-guided temporal
+loss**: warp the previous frame by estimated motion, then penalise disagreement
+with the current output. The methods themselves are diffusion-based and far too
+heavy for a 33k-parameter browser model, but the loss structure transfers.
+
+§12's twin-consistency experiment was that idea with the motion removed — two
+degradations of one static crop. Penalising disagreement everywhere has a trivial
+minimum: make the network less responsive to its input. It found it, converging
+onto bicubic's sharpness (0.6745 vs 0.6784) and bicubic's tLP (-0.01279 vs
+-0.01282), and gave up the model's entire advantage.
+
+**The fix is the same principle as Anime4K's line gate: apply the penalty where
+it means something.** Either use genuine consecutive frames with motion
+compensation, or restrict the twin penalty to regions where the two degradations
+actually differ, instead of over the whole frame.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
