@@ -20,7 +20,17 @@ Two deliberate departures from evaluate.py:
      is invisible on stills and is the main way training for perceptual
      quality can make video worse while every still-image metric improves.
 
-Selection guidance: choose on DISTS with a PSNR floor and a tLP ceiling.
+     **0 is ideal, not minus infinity.** A perfect reconstruction scores
+     exactly 0. Positive means the output changes more between frames than the
+     truth does -- added flicker. Negative means it changes *less*, which is
+     temporal over-smoothing, and it falls monotonically with blur: measured on
+     three clips, bicubic -0.0236, blurred bicubic -0.0315 / -0.0472 / -0.0658
+     at sigma 1/2/4, and a constant grey frame -0.1257 at 10.4 dB. An earlier
+     version of this header said "lower better", which would rank that grey
+     frame first. Read |tLP| as the deviation; among outputs that are all
+     negative, closer to zero is better.
+
+Selection guidance: choose on DISTS with a PSNR floor and a bound on |tLP|.
 Never select on PSNR alone — it is minimised by the conditional mean, which
 is the blurry answer.
 
@@ -387,7 +397,8 @@ def report(acc, indent=""):
             print(f"{n:<{w}}{mean(acc[n]['dists']):>12.4f}")
 
     if any(acc[n]["tlp"] for n in names):
-        print("\ntLP (output flicker minus source flicker; lower better, <=0 ideal)")
+        print("\ntLP (output flicker minus source flicker; 0 = matches truth, "
+              "|tLP| is the deviation)")
         for n in names:
             print(f"{n:<{w}}{mean(acc[n]['tlp']):>12.4f}")
 
