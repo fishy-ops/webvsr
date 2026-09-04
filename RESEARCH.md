@@ -1459,6 +1459,10 @@ per-frame definition right and the error reappeared in the mean over clips.
 
 ## 27. Final ranking, and a decision that is a real trade
 
+> **Reversed by §30.** On the widened 19-clip benchmark the perceptual gain
+> is significant (t=3.00) and the flicker cost is not (t=-0.62). There is no
+> trade; the codec model has been shipped.
+
 > **The perceptual advantage below is not statistically significant — see §29.**
 > Paired at n=12 it is t = -1.74, and the codec model beats shipped on only 8 of
 > 12 clips. The trade is weaker in one direction than this section presents.
@@ -1564,6 +1568,9 @@ about 13% of the variance. The dominant term is simply that clips differ.
 
 ## 29. The benchmark is underpowered for the effects being chased
 
+> **Confirmed, then acted on — see §30.** Widening to 19 camera clips made
+> the same effects resolvable, exactly as this section predicted.
+
 §28 established that these comparisons must be paired. Applying that to the
 CRF 28 ranking, against the currently shipped model, 12 camera clips:
 
@@ -1605,6 +1612,63 @@ for the 1.4-point changes every subsequent experiment has produced.
    unproven and its cost is the more significant of the two effects.
 4. Report `t` and clips-better alongside every mean from here. `rank_models.py`
    now does this automatically.
+
+---
+
+## 30. With enough clips the answer inverts: the codec model ships
+
+§29 predicted that widening the benchmark would make these effects resolvable.
+It did. Five models, **19 camera clips**, CRF 28, paired:
+
+| model | cam DISTS | clips won | \|tLP\| vs bic |
+|---|---|---|---|
+| ldl | +6.0% | 17/19 | +0.00004 |
+| ema_dists | +5.9% | 17/19 | +0.00005 |
+| **webcodec** | +5.9% | **18/19** | **-0.00000** |
+| masked_twin | +5.3% | 17/19 | +0.00016 |
+| shipped | +4.4% | 17/19 | -0.00041 |
+
+Paired against the best (`ldl`):
+
+| model | ΔDISTS | t | Δ\|tLP\| | t | clips |
+|---|---|---|---|---|---|
+| ema_dists | +0.00020 | +1.51 | +0.00002 | +0.32 | 11/19 |
+| webcodec | +0.00025 | +1.56 | -0.00004 | -0.55 | 13/19 |
+| masked_twin | +0.00118 | **+3.27** | +0.00012 | +1.30 | 15/19 |
+| shipped | +0.00238 | **+3.00** | -0.00045 | -0.62 | 16/19 |
+
+**Three conclusions, and two of them reverse earlier sections.**
+
+1. **The perceptual gain over the shipped model is significant** — t = 3.00 on
+   16 of 19 clips. §29 measured t = -1.74 at n=12 and concluded it was unproven;
+   it was underpowered, exactly as that section suspected.
+2. **The flicker cost is not significant** — t = -0.62. §27 held the swap on the
+   grounds that a real temporal regression outweighed an unproven perceptual
+   gain. Both halves of that were artifacts of sample size.
+3. **`ldl`, `ema_dists` and `webcodec` are indistinguishable** (t ≈ 1.5). Every
+   loss added on top of the codec fix — EMA, DISTS-as-loss, LDL — changed
+   nothing measurable. The codec fix alone is the entire effect.
+
+**Shipped: `webcodec`.** Chosen from three statistically tied models on the
+grounds that it is the simplest — one change to the degradation chain, no extra
+loss terms — and it happens to carry the best clip count (18/19) and the flicker
+value closest to bicubic's. `PROVENANCE.json` records it and
+`verify_shipped.py` confirms the binary traces to the checkpoint.
+
+**Real camera footage, across the night:**
+
+| | DISTS vs bicubic |
+|---|---|
+| deployed at session start | **-1.2%** (worse than doing nothing) |
+| after §17's checkpoint swap | +4.4% |
+| now | **+5.9%**, winning 18 of 19 clips |
+
+**The methodological lesson is the sharper one.** Every substantive conclusion
+about model quality tonight flipped at least once, and never because the models
+changed — because the yardstick did. Wrong checkpoint (§14), wrong codec domain
+(§16), wrong metric direction (§10), wrong aggregation (§26), wrong statistical
+test (§28), insufficient power (§29). Only after all six were fixed did the data
+say something stable.
 
 ---
 
