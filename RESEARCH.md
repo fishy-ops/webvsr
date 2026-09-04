@@ -1334,6 +1334,55 @@ if it does, the metric needs normalising by motion before it can rank anything.
 
 ---
 
+## 25. Twin consistency retired, and the shape of what worked tonight
+
+The masked version of §12's consistency loss — penalty restricted to the half of
+pixels where the two degradations already agree, so the model cannot buy
+agreement by becoming unresponsive — trained cleanly and did not collapse onto
+bicubic the way the unmasked one did. It is still worse than doing nothing:
+
+| CRF | shipped | codec fix alone | + masked twin |
+|-----|---------|-----------------|---------------|
+| 20 | +5.7%, tLP +0.0022 | **+7.9%, +0.0012** | +7.0%, +0.0008 |
+| 28 | +3.7%, +0.0030 | **+5.1%, +0.0008** | +4.7%, +0.0003 |
+
+Worse on DISTS *and* worse on flicker, which is the axis it exists to improve.
+The masking removed the trivial minimum without making the penalty useful — the
+term sat flat at 0.0096 for the whole run, never driven down, so it acted as a
+constant drag rather than a gradient toward anything.
+
+**Twin consistency is retired.** Two attempts, two regressions.
+
+### The pattern across the night
+
+| change | kind | result |
+|---|---|---|
+| ship the checkpoint that was already being evaluated (§17) | correction | **+4.9pp** |
+| model the codecs browsers actually decode (§19) | correction | **+1.4pp** |
+| refuse to enlarge the HR reference (§10) | correction | fixed a measurement |
+| tie binaries to checkpoints (§14) | correction | caught the wrong model shipping |
+| unmasked twin consistency (§12) | addition | regression |
+| conv_last folded into conv_cat (§18) | addition | 9% slower |
+| EMA + DISTS-as-loss (§22) | addition | null |
+| masked twin consistency (§25) | addition | regression |
+
+**Four corrections, four gains. Four additions, zero gains.** Every technique
+added because it works elsewhere — two of them straight from the NTIRE 2026
+winner's recipe on this same architecture family — produced nothing or worse.
+Every gain came from finding something that was already wrong.
+
+That is not an argument that techniques never work. It is an argument about where
+to look first in *this* codebase at *this* stage: the measurement apparatus and
+the deployment path had accumulated four separate defects, and each was worth
+more than any recipe change tried against them. The corrections were also far
+cheaper — three of the four cost no GPU at all.
+
+The remaining known-wrong thing is §24: two clip sets disagree about which model
+flickers less, and neither is authoritative. On the night's evidence that is
+where the next gain is, not in a fifth technique.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
