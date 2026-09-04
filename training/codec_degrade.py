@@ -18,7 +18,9 @@ Public entry point is `codec_compress(tensor, ...)`, shaped to drop into
 dataset.py's degradation chain in place of (or after) `jpeg_compress_tensor`.
 """
 
+import contextlib
 import io
+import os
 import random
 
 import numpy as np
@@ -31,22 +33,58 @@ import av.logging
 # training sample that is thousands of lines a second.
 av.logging.set_level(av.logging.PANIC)
 
-# (codec name, pixel format). H.264 and H.265 are what web video actually is;
-# MPEG-4 stands in for the older, blockier end of the distribution.
-# Weighted: x264 is both the most common codec on the web and ~4x faster to
-# encode than x265, so it carries the bulk of the sampling. The others are
-# kept for distribution width, not parity.
+
+@contextlib.contextmanager
+def _quiet_fd2():
+    """Silence writes to fd 2 for the duration of the block.
+
+    x265 and SVT-AV1 both write banners straight to the file descriptor rather
+    than through libav's logging, so av.logging cannot reach them. At one encode
+    per training sample that is thousands of lines a second. Redirecting the
+    descriptor is the only thing that catches it; the cost is two dup2 calls.
+    """
+    try:
+        saved = os.dup(2)
+    except OSError:
+        yield          # no fd 2 to redirect (rare, but do not take training down)
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull)
+        os.close(saved)
+
+# (codec name, pixel format). This has to match what the extension actually
+# meets, which is a browser playing web video -- and that is no longer only
+# H.264. YouTube serves VP9 to most desktop browsers and AV1 to a growing share,
+# and their artifacts differ from x264's: VP9 and AV1 use larger transforms and
+# stronger in-loop filtering, so they smear where x264 blocks. Training only on
+# x264 artifacts is the same class of domain gap this project has been bitten by
+# twice already (bicubic-vs-codec validation, render-vs-camera benchmarking).
+#
+# Weighted by a mix of web prevalence and encode cost, measured per 256x256
+# frame through PyAV: x264 8.0ms, VP9 16.0ms, SVT-AV1 34.7ms. The expensive
+# ones are garnish for distribution width, not parity.
 CODECS = [
     ("libx264", "yuv420p"),
+    ("libvpx-vp9", "yuv420p"),
+    ("libsvtav1", "yuv420p"),
     ("libx265", "yuv420p"),
     ("mpeg4", "yuv420p"),
 ]
-CODEC_WEIGHTS = [0.80, 0.05, 0.15]   # x265 is ~4x the cost; keep it a garnish
+CODEC_WEIGHTS = [0.50, 0.22, 0.08, 0.05, 0.15]
 
 # Per-codec quality range. Scales differ between encoders, so each carries its
-# own: x264/x265 take CRF, mpeg4 takes a qscale where higher is worse.
+# own: x264/x265 take CRF 0-51, VP9 and AV1 take CRF 0-63, mpeg4 takes a qscale
+# where higher is worse. The VP9/AV1 ranges are set higher because the same
+# numeric CRF is markedly less destructive on those encoders.
 QUALITY = {
     "libx264": (23, 42),
+    "libvpx-vp9": (35, 58),
+    "libsvtav1": (40, 62),
     "libx265": (26, 45),
     "mpeg4": (4, 18),
 }
@@ -89,7 +127,14 @@ def codec_compress(img, codec=None, quality=None):
         arr = np.pad(arr, ((0, ph - h), (0, pw - w), (0, 0)), mode="edge")
 
     opts = {}
-    if codec in ("libx264", "libx265"):
+    if codec == "libvpx-vp9":
+        # b=0 is what puts libvpx in constant-quality mode; without it CRF is
+        # only an upper bound and the encode is bitrate-targeted instead.
+        opts.update({"crf": str(q), "b": "0",
+                     "deadline": "realtime", "cpu-used": "8"})
+    elif codec == "libsvtav1":
+        opts.update({"crf": str(q), "preset": "12"})   # 12 = fastest preset
+    elif codec in ("libx264", "libx265"):
         opts["crf"] = str(q)
         # Kill lookahead/threading so a one-frame encode is deterministic and
         # does not sit waiting for frames that will never arrive.
@@ -102,31 +147,32 @@ def codec_compress(img, codec=None, quality=None):
             opts["x265-params"] = "log-level=none"
     buf = io.BytesIO()
     try:
-        container = av.open(buf, mode="w", format="mp4")
-        stream = container.add_stream(codec, rate=25)
-        stream.width, stream.height = pw, ph
-        stream.pix_fmt = pix_fmt
-        if opts:
-            stream.options = opts
-        if codec == "mpeg4":
-            # mpeg4 ignores CRF; drive it with the qscale bitstream knob.
-            stream.codec_context.qmin = q
-            stream.codec_context.qmax = q
+      with _quiet_fd2():
+          container = av.open(buf, mode="w", format="mp4")
+          stream = container.add_stream(codec, rate=25)
+          stream.width, stream.height = pw, ph
+          stream.pix_fmt = pix_fmt
+          if opts:
+              stream.options = opts
+          if codec == "mpeg4":
+              # mpeg4 ignores CRF; drive it with the qscale bitstream knob.
+              stream.codec_context.qmin = q
+              stream.codec_context.qmax = q
 
-        frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
-        for packet in stream.encode(frame):
-            container.mux(packet)
-        for packet in stream.encode():          # flush
-            container.mux(packet)
-        container.close()
+          frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+          for packet in stream.encode(frame):
+              container.mux(packet)
+          for packet in stream.encode():          # flush
+              container.mux(packet)
+          container.close()
 
-        buf.seek(0)
-        container = av.open(buf, mode="r")
-        out = None
-        for f in container.decode(video=0):
-            out = f.to_ndarray(format="rgb24")
-            break
-        container.close()
+          buf.seek(0)
+          container = av.open(buf, mode="r")
+          out = None
+          for f in container.decode(video=0):
+              out = f.to_ndarray(format="rgb24")
+              break
+          container.close()
     except Exception:
         # A codec missing from this ffmpeg build should degrade the sample,
         # not kill the training run.
