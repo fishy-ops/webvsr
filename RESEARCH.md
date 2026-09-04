@@ -1016,6 +1016,47 @@ for two sessions without anyone noticing it was not the one shipping.
 
 ---
 
+## 18. Folding conv_last into conv_cat: exact, and slower
+
+`conv_cat` is a 1x1 over the concat of four buffers and `conv_last` is the 3x3
+that produces the fourth, so the pair composes exactly:
+
+    W3 @ (L * b4 + bl) = (W3 @ L) * b4 + W3 @ bl
+
+giving one 3x3 kernel `K[o,i] = sum_m W3[o,m] L[m,i]` and a bias shift. Verified
+in PyTorch at `max|ref - fused| = 6e-7`, and composable at *load* time from the
+existing tensors, so no re-export and every shipped `.bin` keeps working.
+
+It removes a whole pass — 18 dispatches to 17, one full C-channel write and the
+read that followed it. Measured on an M4 Pro at 720p, output `max_abs_diff` 1/255:
+
+| build | frame time |
+|---|---|
+| unfolded | **21.2 ms** |
+| folded, one thread per output channel | 30.2 ms |
+| folded, 8 output channels per thread | 23.1 ms |
+
+**Both folded variants are slower.** The first was 42% slower because every
+thread re-read the same 3x3 neighbourhood; amortising across 8 accumulators
+recovered most of that and still lost by 9%.
+
+The reason is worth recording, because it bounds a whole family of ideas.
+`buildConv` is tuned hard: it computes a **2x2 pixel block per thread** and loads
+a **4x4 input patch once per input channel**, reusing it across all 9 taps and
+all 4 pixels. A fused kernel that does not replicate that blocking pays far more
+in redundant loads than one removed buffer round-trip saves.
+
+**The general lesson: pass-count is not the cost model here.** §10's attention
+fusion won because it removed a pass *without* giving up any blocking — the
+attention was elementwise and folded into an already-optimal conv's write. This
+fold instead replaced an optimal 3x3 with a worse one. Future fusion candidates
+should be judged on whether they preserve the inner-loop reuse, not on how many
+dispatches they delete.
+
+Left in behind `FOLD_CONV_LAST`, defaulting off.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via

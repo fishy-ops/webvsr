@@ -58,6 +58,34 @@ const f16WantedFor = (adapter) => {
 // all intermediate traffic (RESEARCH.md 2a) -- and 4 of 22 dispatches, at
 // 32-71us each on Metal (RESEARCH.md 2b). Numerically identical: same
 // arithmetic, same order, one less round-trip through DRAM.
+// Fold conv_last into conv_cat. conv_cat is a 1x1 over the concat of four
+// buffers and conv_last is the 3x3 that produces the fourth, so the pair
+// composes exactly: K[o,i] = sum_m W3[o,m] * L[m,i] gives one 3x3 kernel, and
+// the bias picks up W3 @ bl. Verified max|ref - fused| = 6e-7 (float32 rounding).
+// That removes a whole conv pass -- one full C-channel write and the read that
+// followed it -- for the cost of C*9 extra MACs per output pixel, which is the
+// bandwidth-for-arithmetic trade this engine wants (RESEARCH.md 2a).
+// Composed at load time from the existing tensors, so every already-exported
+// .bin keeps working unchanged.
+// MEASURED: OFF. The fold is exact and does remove a pass (18 -> 17 dispatches,
+// output max_abs_diff 1/255 = float rounding), but it is SLOWER on an M4 Pro --
+// 21.2ms unfolded against 23.1ms folded at 720p, and 30.2ms before the shader
+// was rewritten to amortise 8 output channels per thread.
+//
+// Why: buildConv is tuned hard. It computes a 2x2 pixel block per thread and
+// loads a 4x4 input patch once per input channel, reusing it across all 9 taps
+// and all 4 pixels. The fused shader's 3x3 half does none of that, so it loses
+// more on redundant loads than the removed buffer write and read save. Winning
+// here needs the same blocking ported into the fused kernel, which is a real
+// rewrite with an uncertain payoff -- the saving being chased is one pass in 17.
+//
+// Kept because the algebra is verified and the flag makes it a one-line
+// experiment if the fused kernel is ever given buildConv's treatment.
+const FOLD_CONV_LAST = (typeof globalThis !== "undefined"
+                        && globalThis.__WEBVSR_FORCE_FOLD_LAST !== undefined)
+                       ? !!globalThis.__WEBVSR_FORCE_FOLD_LAST
+                       : false;
+
 const FUSE_ATTN = (typeof globalThis !== "undefined"
                    && globalThis.__WEBVSR_FORCE_FUSE_ATTN !== undefined)
                   ? !!globalThis.__WEBVSR_FORCE_FUSE_ATTN
@@ -176,6 +204,7 @@ class WebGPUSR {
     // In f16 mode, convert each tensor to half-float bytes before upload.
     const toBytes = (sub) => this.f16 ? f32ArrayToF16(sub) : sub;
     let off = 0;
+    const cpu = {};
     for (const [name, outC, inC, k] of weightSpec(this.C, this.scale, this.exits)) {
       const wLen = outC * inC * k * k;
       const bLen = outC;
@@ -190,6 +219,57 @@ class WebGPUSR {
       this.device.queue.writeBuffer(bBuf, 0, toBytes(all.subarray(off, off + bLen)));
       off += bLen;
       this.w[name] = { weight: wBuf, bias: bBuf };
+      if (name === "conv_cat" || name === "conv_last") {
+        // Keep CPU copies: the fold needs the numbers, not the GPU buffers.
+        cpu[name] = {
+          weight: all.slice(off - wLen - bLen, off - bLen),
+          bias: all.slice(off - bLen, off),
+        };
+      }
+    }
+
+    if (FOLD_CONV_LAST && cpu.conv_cat && cpu.conv_last) {
+      const C = this.C;
+      const W = cpu.conv_cat.weight;      // [C, 4C]
+      const bc = cpu.conv_cat.bias;       // [C]
+      const L = cpu.conv_last.weight;     // [C, C, 3, 3]
+      const bl = cpu.conv_last.bias;      // [C]
+
+      // 1x1 part: the first 3C input channels, unchanged.
+      const w1 = new Float32Array(C * 3 * C);
+      for (let o = 0; o < C; o++)
+        for (let ic = 0; ic < 3 * C; ic++) w1[o * 3 * C + ic] = W[o * 4 * C + ic];
+
+      // K[o,i,k] = sum_m W3[o,m] * L[m,i,k]
+      const K = new Float32Array(C * C * 9);
+      for (let o = 0; o < C; o++)
+        for (let m2 = 0; m2 < C; m2++) {
+          const w3 = W[o * 4 * C + 3 * C + m2];
+          if (w3 === 0) continue;
+          for (let i = 0; i < C; i++)
+            for (let k = 0; k < 9; k++)
+              K[(o * C + i) * 9 + k] += w3 * L[(m2 * C + i) * 9 + k];
+        }
+
+      // bias picks up W3 @ bl
+      const bF = new Float32Array(C);
+      for (let o = 0; o < C; o++) {
+        let acc = bc[o];
+        for (let m2 = 0; m2 < C; m2++) acc += W[o * 4 * C + 3 * C + m2] * bl[m2];
+        bF[o] = acc;
+      }
+
+      const upload = (arr) => {
+        const b = this.device.createBuffer({
+          size: Math.max(arr.length, 4) * FS,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        this.device.queue.writeBuffer(b, 0, toBytes(arr));
+        return b;
+      };
+      this.w.cat_w1 = { weight: upload(w1), bias: null };
+      this.w.cat_wk = { weight: upload(K), bias: null };
+      this.w.cat_bias = { weight: upload(bF), bias: null };
     }
     if (off !== all.length) {
       console.warn(`[WebVSR] weight size mismatch: read ${off} of ${all.length}`);
@@ -211,6 +291,7 @@ class WebGPUSR {
     if (FUSE_ATTN) this.pipe.convattn = mk(EN + buildConv(T, true));
     this.pipe.attn = mk(EN + buildAttn(T));
     this.pipe.cat = mk(EN + buildCat(T, this.C));
+    if (FOLD_CONV_LAST) this.pipe.catfused = mk(EN + buildCatFused(T, this.C));
     this.pipe.shuffle = mk(EN + buildShuffle(T));
     this.pipe.finish = mk(SHADER_FINISH);     // reads a texture, always f32
     this.pipe.sharpen = mk(SHADER_SHARPEN);   // contrast-adaptive sharpen
@@ -354,9 +435,11 @@ class WebGPUSR {
       ['conv', conv(B.sC, 'b4c1', B.sA, C, C, 3, 1), C],
       ['conv', conv(B.sA, 'b4c2', B.sB, C, C, 3, 1), C],
       ['convattn', convAttn(B.sB, 'b4c3', B.sC, B.sA, C, C, 3), C],
-      // tail
-      ['conv', conv(B.sA, 'conv_last', B.bb4, C, C, 3, 0), C],
-      ['cat', this._catBG(), C],
+      // tail -- conv_last folded into conv_cat when the weights allow it
+      ...(FOLD_CONV_LAST && this.w.cat_w1
+          ? [['catfused', this._catFusedBG(), C]]
+          : [['conv', conv(B.sA, 'conv_last', B.bb4, C, C, 3, 0), C],
+             ['cat', this._catBG(), C]]),
       ['conv', conv(B.catout, 'upsampler', B.up, C, 3 * this.scale * this.scale, 3, 0), 3 * this.scale * this.scale],
     ] : [
       ['conv', conv(B.x3, 'conv_first', B.f0, 3, C, 3, 0), C],
@@ -459,6 +542,25 @@ class WebGPUSR {
     return ok ? [2, 4] : [4];
   }
 
+  _catFusedBG() {
+    const d = this.device, B = this.buf, W = this.w;
+    return d.createBindGroup({
+      layout: this.pipe.catfused.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: B.f0 } },
+        { binding: 1, resource: { buffer: B.mid1 } },
+        { binding: 2, resource: { buffer: B.mid3 } },
+        // the fourth input is now block 4's output directly: conv_last is gone
+        { binding: 3, resource: { buffer: B.sA } },
+        { binding: 4, resource: { buffer: W.cat_w1.weight } },
+        { binding: 5, resource: { buffer: W.cat_wk.weight } },
+        { binding: 6, resource: { buffer: W.cat_bias.weight } },
+        { binding: 7, resource: { buffer: B.catout } },
+        { binding: 8, resource: { buffer: this._u([this.inW, this.inH, 4 * this.C, this.C]) } },
+      ],
+    });
+  }
+
   _catBG(sfx = '') {
     const d = this.device, B = this.buf, W = this.w;
     return d.createBindGroup({
@@ -515,6 +617,7 @@ class WebGPUSR {
       if (key === 'attn') pass.dispatchWorkgroups(gx16, gy16, oc);        // per-channel (oc = C)
       else if (key === 'convattn') pass.dispatchWorkgroups(gx16, gy16, Math.ceil(oc / 8)); // same geometry as conv
       else if (key === 'cat') pass.dispatchWorkgroups(gx8, gy8, Math.ceil(oc / 8)); // 8 ch/thread
+      else if (key === 'catfused') pass.dispatchWorkgroups(gx8, gy8, Math.ceil(oc / 8)); // 8 ch/thread
       else pass.dispatchWorkgroups(gx16, gy16, Math.ceil(oc / 8));        // conv: 2×2px×8ch/thread
     }
 
@@ -738,6 +841,78 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let att = 1.0 / (1.0 + exp(-v)) - 0.5;
   outp[idx] = ${T}((v + f32(xb[idx])) * att);
 }`;
+
+// conv_cat with conv_last folded in: 1x1 over the first three buffers, 3x3 over
+// the fourth. Same output as running conv_last then conv_cat, one pass fewer.
+const buildCatFused = (T, C) => {
+  const IN3 = 3 * C;
+  // 8 output channels per thread. The first version used one thread per output
+  // channel and was 42% SLOWER than not folding at all: every thread re-read the
+  // same 3x3 neighbourhood of in3, so C-fold redundant loads swamped the one
+  // buffer write the fold saves. Amortising the loads across 8 accumulators is
+  // what makes the trade actually pay.
+  let macs1 = '', macsK = '';
+  for (let k = 0; k < 8; k++) macs1 += `      a${k} += pix * f32(w1[(o + ${k}u) * ${IN3}u + ic]);\n`;
+  for (let k = 0; k < 8; k++) macsK += `        a${k} += v * f32(wk[(((o + ${k}u) * ${C}u + i) * 9u) + tap]);\n`;
+  return `
+@group(0) @binding(0) var<storage, read> in0: array<${T}>;
+@group(0) @binding(1) var<storage, read> in1: array<${T}>;
+@group(0) @binding(2) var<storage, read> in2: array<${T}>;
+@group(0) @binding(3) var<storage, read> in3: array<${T}>;
+@group(0) @binding(4) var<storage, read> w1: array<${T}>;
+@group(0) @binding(5) var<storage, read> wk: array<${T}>;
+@group(0) @binding(6) var<storage, read> bia: array<${T}>;
+@group(0) @binding(7) var<storage, read_write> outp: array<${T}>;
+struct P { W: u32, H: u32, inC: u32, outC: u32 };
+@group(0) @binding(8) var<uniform> p: P;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = gid.x; let y = gid.y;
+  if (x >= p.W || y >= p.H) { return; }
+  let px = p.W * p.H;
+  let idx = y * p.W + x;
+  let o = gid.z * 8u;
+
+  var a0 = 0.0; var a1 = 0.0; var a2 = 0.0; var a3 = 0.0;
+  var a4 = 0.0; var a5 = 0.0; var a6 = 0.0; var a7 = 0.0;
+  if (o + 0u < p.outC) { a0 = f32(bia[o + 0u]); }
+  if (o + 1u < p.outC) { a1 = f32(bia[o + 1u]); }
+  if (o + 2u < p.outC) { a2 = f32(bia[o + 2u]); }
+  if (o + 3u < p.outC) { a3 = f32(bia[o + 3u]); }
+  if (o + 4u < p.outC) { a4 = f32(bia[o + 4u]); }
+  if (o + 5u < p.outC) { a5 = f32(bia[o + 5u]); }
+  if (o + 6u < p.outC) { a6 = f32(bia[o + 6u]); }
+  if (o + 7u < p.outC) { a7 = f32(bia[o + 7u]); }
+
+  for (var ic = 0u; ic < ${IN3}u; ic++) {
+    var pix: f32;
+    if (ic < ${C}u) { pix = f32(in0[ic * px + idx]); }
+    else if (ic < ${2 * C}u) { pix = f32(in1[(ic - ${C}u) * px + idx]); }
+    else { pix = f32(in2[(ic - ${2 * C}u) * px + idx]); }
+${macs1}  }
+
+  for (var i = 0u; i < ${C}u; i++) {
+    let cb = i * px;
+    for (var t = 0u; t < 9u; t++) {
+      let ky = t / 3u; let kx = t % 3u;
+      let sx = i32(x) + i32(kx) - 1; let sy = i32(y) + i32(ky) - 1;
+      let inb = sx >= 0 && sx < i32(p.W) && sy >= 0 && sy < i32(p.H);
+      let v = select(0.0, f32(in3[cb + u32(clamp(sy,0,i32(p.H)-1)) * p.W + u32(clamp(sx,0,i32(p.W)-1))]), inb);
+      let tap = t;
+${macsK}    }
+  }
+
+  if (o + 0u < p.outC) { outp[(o + 0u) * px + idx] = ${T}(a0); }
+  if (o + 1u < p.outC) { outp[(o + 1u) * px + idx] = ${T}(a1); }
+  if (o + 2u < p.outC) { outp[(o + 2u) * px + idx] = ${T}(a2); }
+  if (o + 3u < p.outC) { outp[(o + 3u) * px + idx] = ${T}(a3); }
+  if (o + 4u < p.outC) { outp[(o + 4u) * px + idx] = ${T}(a4); }
+  if (o + 5u < p.outC) { outp[(o + 5u) * px + idx] = ${T}(a5); }
+  if (o + 6u < p.outC) { outp[(o + 6u) * px + idx] = ${T}(a6); }
+  if (o + 7u < p.outC) { outp[(o + 7u) * px + idx] = ${T}(a7); }
+}`;
+};
 
 // conv_cat: 1×1 over the concat of 4 C-channel buffers (4C inputs → C outputs).
 // Channel boundaries are baked from C. 8 output channels per thread.
