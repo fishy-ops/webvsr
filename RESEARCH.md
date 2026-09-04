@@ -1725,6 +1725,52 @@ that.
 
 ---
 
+## 32. Start to finish, measured on one benchmark
+
+Every figure in §§17-31 compares some pair of intermediate checkpoints, often on
+different clip sets. This is the only like-for-like measurement of what changed:
+the model that was live when the session began against the model live now, same
+19 camera clips, same CRF 28, paired.
+
+| | camera DISTS | clips beating bicubic | \|tLP\| vs bicubic |
+|---|---|---|---|
+| **at session start** | **-1.9%** | **8 / 19** | +0.00007 |
+| **now** | **+5.9%** | **18 / 19** | -0.00000 |
+
+Paired: **ΔDISTS +0.01292, t = +7.69, better on 19 of 19 clips.**
+
+**A 7.8 percentage point swing**, and the largest effect measured anywhere in
+this file by a wide margin — §30's swap, the second largest, was t = 3.00.
+
+The clip count carries the meaning better than the percentage. The model users
+were running beat bicubic on **8 of 19 clips**: worse than a coin flip, and
+unpredictable in which direction on any given video. It now wins **18 of 19**.
+That is the difference between a feature that sometimes degrades what you are
+watching and one that reliably improves it.
+
+**Flicker is unchanged** (t = 0.14). The temporal trade that §19, §27 and §31
+spend so long on exists only *between the two newer models*; against the starting
+point it does not exist at all.
+
+**Where the 7.8 points came from:**
+
+| change | contribution | cost |
+|---|---|---|
+| ship the checkpoint already being evaluated (§17) | ~6.3pp | minutes, no GPU |
+| model the codecs browsers decode (§16, §19) | ~1.5pp | one training run |
+| everything else — EMA, DISTS-as-loss, LDL, twin consistency, conv folding | **0** | ~10 GPU-hours |
+
+**Alongside the engine work** (§10, §20): 73.2ms to 48.0ms per 1080p frame on
+Apple silicon, 1.53x, with fusion verified bit-identical and f16 verified
+quality-neutral on real codec-degraded video — and the WGSL engine verified to
+match PyTorch to 1 LSB, so these numbers describe what users receive rather than
+what a lab measured.
+
+**Unchanged on NVIDIA**: Chrome does not expose `shader-f16` there and fusion sits
+inside the run-to-run noise band.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
