@@ -1419,11 +1419,19 @@ discrepancy was entirely in the summary.
 
 **What it changes.**
 
-**§19 is materially wrong.** It reported the codec-retrained model giving up
-"roughly three quarters of the flicker advantage" and withheld a swap on that
-basis. Corrected: shipped reduces |tLP| deviation by 0.00156 and the codec model
-by 0.00148 — **about 5%**, not 75%. The flicker objection to swapping was largely
-an artifact of the summary.
+**§19's magnitude was wrong, but its direction was not — and this correction was
+itself over-stated on one CRF.** Under the corrected convention:
+
+| CRF | shipped | codec-retrained | gap |
+|---|---|---|---|
+| 20 | -0.00156 | -0.00148 | **5%** |
+| 28 | -0.00178 | -0.00032 | **82%** |
+
+At CRF 20 the flicker cost is negligible and §19's "three quarters" was indeed an
+artifact. At CRF 28 — closer to what web video actually uses — shipped reduces
+flicker deviation **5.5x more**, and the regression is real. Generalising the
+CRF 20 figure to "about 5%" was a second error on top of the first; both CRFs had
+to be checked before the claim was worth making.
 
 **§24 shrinks.** Its "opposite orderings" compared the benchmark computed with the
 raw convention against the held-out set computed with |tLP|. Corrected, the
@@ -1441,6 +1449,56 @@ correctly. `split_by_origin.py` is now fixed.
 **The general lesson repeats §18's.** A metric's direction has to be enforced at
 every level it is aggregated, not just where it is defined. §10 got the
 per-frame definition right and the error reappeared in the mean over clips.
+
+---
+
+## 27. Final ranking, and a decision that is a real trade
+
+`rank_models.py` over the 12 real-camera clips, criteria fixed in §14/§11 before
+any of these numbers existed: camera DISTS first, then |tLP| deviation, then
+clips won.
+
+**CRF 20**
+
+| model | cam DISTS | wins | \|tLP\| dev | render DISTS |
+|---|---|---|---|---|
+| **webcodec** | **+7.9%** | 11/12 | -0.00148 | +19.8% |
+| ema_dists | +7.9% | 11/12 | -0.00138 | +19.4% |
+| masked_twin | +7.0% | 11/12 | -0.00121 | +18.1% |
+| shipped | +5.7% | 10/12 | **-0.00156** | +21.3% |
+
+**CRF 28**
+
+| model | cam DISTS | wins | \|tLP\| dev | render DISTS |
+|---|---|---|---|---|
+| ema_dists | **+5.2%** | 10/12 | -0.00023 | +13.1% |
+| **webcodec** | +5.1% | **11/12** | -0.00032 | +13.3% |
+| masked_twin | +4.7% | 10/12 | -0.00013 | +12.0% |
+| shipped | +3.7% | 10/12 | **-0.00178** | +16.2% |
+
+**Among the new models, `webcodec` wins.** It ties `ema_dists` on DISTS at CRF 20,
+trails by 0.1pp at CRF 28, and beats it on both |tLP| and clips won — consistent
+with §22, where EMA and DISTS-as-loss added nothing over the codec fix alone.
+
+**Against the shipped model it is a genuine trade, not a clear win:**
+
+- **Perceptual: clearly better.** +7.9% against +5.7% at CRF 20, +5.1% against
+  +3.7% at CRF 28, and 11 of 12 clips against 10.
+- **Temporal: clearly worse at CRF 28.** 5.5x less reduction in flicker deviation,
+  at the compression level most web video uses.
+- **Render content: worse.** +13.3% against +16.2%.
+
+The pre-registered rule ranks DISTS first and therefore selects `webcodec`. But
+that ordering was justified by §11's claim that flicker is the advantage which
+transfers — a claim §24 weakened and §26 partly restored, and which is now known
+to hold at some CRFs and not others.
+
+**Not swapped.** §17's swap was made unilaterally because the evidence was
+one-sided: the deployed model was *worse than bicubic* on real footage and the
+alternative won on everything. This is not that. Trading a measurable temporal
+regression for a measurable perceptual gain is a product judgement about which
+artifact a viewer minds more, and no metric here answers it. The comparison is
+recorded; the choice belongs to whoever owns the product.
 
 ---
 
