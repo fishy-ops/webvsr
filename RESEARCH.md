@@ -933,6 +933,60 @@ actually differ, instead of over the whole frame.
 
 ---
 
+## 16. The network is not just an anti-ringing clamp — and the codec mix was wrong
+
+### Ringing suppression does not explain the win after all
+
+§13 found the model's large advantage on render clips is that bicubic *rings*
+there. The obvious follow-up: an anti-ringing clamp costs almost nothing — an
+upscaled pixel cannot legitimately fall outside the min-max of the source
+neighbourhood it came from, so clamp it there. If that captured most of the
+gain, much of what a 33k-parameter network buys would be available free.
+
+It does not. CRF 28, DISTS against bicubic:
+
+| variant | render clips | camera clips | edge sharpness (render) |
+|---|---|---|---|
+| bicubic | — | — | 2.1520 |
+| bicubic + clamp | **-0.7%** | **-0.3%** | 1.9617 |
+| deployed | +9.6% | +0.9% | 1.4012 |
+| candidate | **+15.9%** | **+5.1%** | 1.4238 |
+
+The clamp works as a clamp — edge sharpness falls 2.15 -> 1.96, so overshoot is
+genuinely being suppressed — and perceptual quality gets slightly *worse* on both
+groups. Clamping removes the overshoot without putting anything in its place;
+the network removes it and reconstructs plausible edge structure underneath.
+
+**So the network is doing real restoration, not cheap artifact suppression, and
+the neural route is justified on this content.** The content-gate idea from §15
+survives, but the gate should select between *network and bicubic*, not between
+*network and a clamp*.
+
+This is also the third independent measurement showing the candidate checkpoint
+beats the deployed one — here by 15.9% against 9.6% on renders and 5.1% against
+0.9% on camera footage (§14, and CRF 20/28 in chain10).
+
+### The degradation chain modelled the wrong codecs
+
+`codec_degrade.py` sampled libx264 (80%), mpeg4 (15%), libx265 (5%), with a
+comment stating "H.264 and H.265 are what web video actually is". That has not
+been true for the deployment target for years: **YouTube serves VP9 to most
+desktop browsers and AV1 to a growing share**, and their artifacts differ in kind
+— larger transforms and stronger in-loop filtering, so they smear where x264
+blocks. A browser extension trained only on x264 artifacts is the same class of
+domain gap this project has already been bitten by twice.
+
+Both encoders were available and both work through PyAV, measured per 256x256
+frame: x264 8.0ms, VP9 16.0ms, SVT-AV1 34.7ms (libaom is not exposed by PyAV).
+The chain now samples x264 0.50 / VP9 0.22 / mpeg4 0.15 / AV1 0.08 / x265 0.05,
+costing 74.8ms per sample against roughly 55ms before.
+
+SVT-AV1 writes its banner straight to the file descriptor, as x265 does, so
+`av.logging` cannot reach it. The encode is now wrapped in a file-descriptor
+redirect, which handles both.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
