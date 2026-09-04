@@ -1,0 +1,40 @@
+<!DOCTYPE html><html><head><meta charset=utf-8><title>parity</title></head><body><pre id=o>...</pre>
+<script>
+const say=(o)=>document.getElementById('o').textContent=JSON.stringify(o,null,1);
+const loadPng=async(u)=>{const b=await fetch(u).then(r=>r.blob());const bm=await createImageBitmap(b);
+  const c=document.createElement('canvas');c.width=bm.width;c.height=bm.height;
+  c.getContext('2d').drawImage(bm,0,0);bm.close();return c;};
+// The engine's canvas holds a WebGPU context, so getContext('2d') on it
+// returns null; copy through a fresh 2D canvas to read pixels back.
+const pix=(c)=>{const t=document.createElement('canvas');t.width=c.width;t.height=c.height;
+  const g=t.getContext('2d');g.drawImage(c,0,0);return g.getImageData(0,0,t.width,t.height).data;};
+(async()=>{
+  const out={};
+  const lrC=await loadPng('/parity/lr.png');
+  const refC=await loadPng('/parity/sr_pytorch.png');
+  out.lr=[lrC.width,lrC.height]; out.ref=[refC.width,refC.height];
+
+  const src=await fetch('/extension/webgpu-sr.js?p='+Date.now()).then(r=>r.text());
+  const Cls=new Function(src+'\nreturn WebGPUSR;')();
+  const e=new Cls(); await e.init();
+  await e.loadWeights('/extension/models/span_lite_2x_c16.bin');
+  out.f16=e.f16;
+  const c=document.createElement('canvas'); c.width=lrC.width*2; c.height=lrC.height*2;
+  e.configure(c,lrC.width,lrC.height,lrC.width*2,lrC.height*2);
+  const f=new VideoFrame(lrC,{timestamp:0});
+  for(let k=0;k<4;k++) e.render(f);
+  await e.device.queue.onSubmittedWorkDone(); f.close();
+
+  const g=pix(c), r=pix(refC);
+  if(g.length!==r.length){ out.error='size mismatch '+g.length+' vs '+r.length; say(out); document.title='DONE'; return; }
+  let max=0,sum=0,n=0,over8=0;
+  for(let i=0;i<g.length;i++){ if(i%4===3) continue;
+    const d=Math.abs(g[i]-r[i]); if(d>max)max=d; if(d>8)over8++; sum+=d; n++; }
+  out.engine_vs_pytorch={max_abs_diff:max, mean_abs_diff:+(sum/n).toFixed(4),
+                         pixels_over_8:over8, pct_over_8:+(100*over8/n).toFixed(3)};
+  out.verdict = max<=3 ? 'MATCHES (rounding only)'
+              : max<=12 ? 'CLOSE but a real difference'
+              : 'DIVERGES - deployment bug';
+  say(out); document.title='DONE';
+})().catch(e=>{say({error:String(e.message||e)});document.title='DONE';});
+</script></body></html>
