@@ -1063,6 +1063,11 @@ Left in behind `FOLD_CONV_LAST`, defaulting off.
 
 ## 19. Training on the codecs browsers decode: better perceptually, worse temporally
 
+> **The flicker regression here is largely an artifact — see §26.** The tLP
+> figures in this section use a summary convention that inflates gains on
+> clips where the model crosses zero. Corrected, the codec model gives up
+> about 5% of the flicker advantage, not three quarters.
+
 §16 changed the degradation chain from x264/x265/mpeg4 to a mix including VP9 and
 AV1, on the grounds that a browser extension meets what YouTube serves. Retrained
 from the newly-shipped checkpoint, 40 epochs, everything else held constant.
@@ -1282,6 +1287,11 @@ principle.
 
 ## 24. Flicker does not rank models consistently across content
 
+> **Partly an artifact — see §26.** The benchmark side of this comparison
+> used the raw tLP difference while the held-out side used |tLP|. Corrected,
+> the benchmark says the two models are near-tied rather than clearly
+> opposite, so the disagreement is much smaller than recorded.
+
 §23 disqualified the video validation set because it ranked the codec-retrained
 model best on |tLP| where the benchmark ranked it worst, and blamed the likely
 cause: four held-out clips against twelve. That was testable. The held-out set
@@ -1380,6 +1390,57 @@ cheaper — three of the four cost no GPU at all.
 The remaining known-wrong thing is §24: two clip sets disagree about which model
 flickers less, and neither is authoritative. On the night's evidence that is
 where the next gain is, not in a fifth technique.
+
+---
+
+## 26. A sign error in how tLP was summarised, and what it changed
+
+`split_by_origin.py` reported `mean(model_tlp - bicubic_tlp)`. §10 established
+that **0 is the target** for tLP: positive is added flicker, negative is temporal
+over-smoothing, and "lower is better" is optimised by a constant grey frame. The
+raw difference therefore credits a model *unboundedly* for flickering less than
+the truth — exactly the failure §10 already identified, reintroduced one level up
+in the aggregation.
+
+The clip where it bites:
+
+| | bicubic | model | raw difference | |tLP| deviation |
+|---|---|---|---|---|
+| `vsr_test_video` | -0.00710 | +0.00440 | **+0.01150** | **-0.00270** |
+
+Bicubic over-smooths; the model adds flicker. Raw scores that as a large gain
+because the number went up. By deviation it went 0.0071 to 0.0044 — a real
+improvement, roughly a quarter the size.
+
+First suspected as measurement noise. It is not: re-evaluating the same
+checkpoints on the same clips reproduces every per-clip tLP **exactly**, standard
+deviation 0.00000. The degradation is seeded and the metric is deterministic. The
+discrepancy was entirely in the summary.
+
+**What it changes.**
+
+**§19 is materially wrong.** It reported the codec-retrained model giving up
+"roughly three quarters of the flicker advantage" and withheld a swap on that
+basis. Corrected: shipped reduces |tLP| deviation by 0.00156 and the codec model
+by 0.00148 — **about 5%**, not 75%. The flicker objection to swapping was largely
+an artifact of the summary.
+
+**§24 shrinks.** Its "opposite orderings" compared the benchmark computed with the
+raw convention against the held-out set computed with |tLP|. Corrected, the
+benchmark has the two models near-tied (0.00008 apart) where the held-out set
+prefers the codec model — a mild disagreement, not a contradiction. §24's broader
+claim that flicker is content-dependent is weakened accordingly, and §11's
+"advantage that transfers" needs less qualification than §24 imposed.
+
+**§22 is unaffected in its conclusion** — EMA+DISTS was null on DISTS, which
+carries the finding — though its tLP column shares the error.
+
+`rank_models.py` used |tLP| from the start, so the ranking in §27 is computed
+correctly. `split_by_origin.py` is now fixed.
+
+**The general lesson repeats §18's.** A metric's direction has to be enforced at
+every level it is aggregated, not just where it is defined. §10 got the
+per-frame definition right and the error reappeared in the mean over clips.
 
 ---
 

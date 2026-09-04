@@ -17,8 +17,14 @@ for i in range(1, len(blocks), 2):
     bd, md = grab(body, "DISTS (lower better)", "bicubic"), grab(body, "DISTS (lower better)", MODEL)
     bt, mt = grab(body, "tLP (output flicker", "bicubic"), grab(body, "tLP (output flicker", MODEL)
     if None in (bd, md): continue
+    # |tLP| deviation, NOT the raw difference. §10 established 0 is the target;
+    # the raw difference credits a model unboundedly for flickering LESS than the
+    # truth, which is over-smoothing. On vsr_test_video (bicubic -0.0071, model
+    # +0.0044) raw reports +0.0115 as a large gain where the deviation went
+    # 0.0071 -> 0.0044. That error inflated every tLP comparison in §19/§22/§24.
+    tdev = (abs(mt) - abs(bt)) if None not in (bt, mt) else float("nan")
     rows.append({"clip": clip, "render": clip in RENDERS,
-                 "d": (1 - md/bd)*100, "t": (mt - bt) if None not in (bt, mt) else float("nan")})
+                 "d": (1 - md/bd)*100, "t": tdev})
 print(f"model: {MODEL}")
 for lbl, sel in (("3 renders", [r for r in rows if r["render"]]),
                  ("12 real-camera", [r for r in rows if not r["render"]]),
@@ -26,4 +32,4 @@ for lbl, sel in (("3 renders", [r for r in rows if r["render"]]),
     if not sel: continue
     wins = sum(1 for r in sel if r["d"] > 0)
     print(f"  {lbl:<16} n={len(sel):<3} DISTS {np.mean([r['d'] for r in sel]):+6.1f}%   "
-          f"tLP {np.mean([r['t'] for r in sel]):+.4f}   wins {wins}/{len(sel)}")
+          f"|tLP|dev {np.mean([r['t'] for r in sel]):+.5f}   wins {wins}/{len(sel)}")
