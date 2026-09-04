@@ -257,6 +257,19 @@ def train():
     parser.add_argument("--twin-consistency", type=float, default=0.0,
                         help="weight on |f(lr) - f(lr')| for two degradations "
                              "of the same crop; 0 disables and costs nothing")
+    # The unmasked version of this loss failed (RESEARCH.md 12): penalising
+    # disagreement everywhere has a trivial minimum -- make the network less
+    # responsive -- and the run found it, converging onto bicubic's sharpness
+    # and bicubic's tLP. Restricting the penalty to pixels where the two
+    # degradations ALREADY agree removes that escape: the model cannot buy
+    # agreement by blurring, because in those regions its two inputs are nearly
+    # identical and a correct model would already agree. Where they genuinely
+    # differ, no consistency is demanded. Same principle as Anime4K's line gate
+    # and the masked temporal losses in the video-restoration literature.
+    parser.add_argument("--twin-mask-q", type=float, default=0.0,
+                        help="quantile of |lr-lr'| below which the consistency "
+                             "penalty applies; 0.5 = the half of pixels the two "
+                             "degradations agree on most. 0 disables masking")
     parser.add_argument("--ema-decay", type=float, default=0.0,
                         help="EMA decay for weights; 0 disables. 0.999 is what "
                              "the NTIRE 2026 winner used on this architecture")
@@ -527,7 +540,24 @@ def train():
                     if sr2.shape != sr.shape:
                         sr2 = F.interpolate(sr2, size=sr.shape[2:], mode="bicubic",
                                             align_corners=False).clamp(0, 1)
-                    tc = (sr - sr2).abs().mean()
+                    d_out = (sr - sr2).abs()
+                    if args.twin_mask_q > 0:
+                        # Per-pixel LR disagreement, upsampled to output size.
+                        d_in = (lr - lr2).abs().mean(1, keepdim=True)
+                        d_in = F.interpolate(d_in, size=sr.shape[2:],
+                                             mode="nearest")
+                        thr = torch.quantile(
+                            d_in.flatten(1).float(), args.twin_mask_q, dim=1
+                        ).view(-1, 1, 1, 1)
+                        mask = (d_in <= thr).to(d_out.dtype)
+                        # mask is single-channel and d_out is not, so the
+                        # denominator has to count channels too -- otherwise the
+                        # term comes out C times larger than the unmasked one and
+                        # --twin-consistency means something different in each mode.
+                        denom = (mask.sum() * d_out.shape[1]).clamp(min=1.0)
+                        tc = (d_out * mask).sum() / denom
+                    else:
+                        tc = d_out.mean()
                     loss = loss + args.twin_consistency * tc
                     components = dict(components)
                     components["twin"] = float(tc.detach())
