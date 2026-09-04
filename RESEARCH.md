@@ -1617,6 +1617,9 @@ for the 1.4-point changes every subsequent experiment has produced.
 
 ## 30. With enough clips the answer inverts: the codec model ships
 
+> **Holds at CRF 20 (t=3.50) — but see §31: on conference video the model this
+> replaced is better, significantly so on flicker.**
+
 §29 predicted that widening the benchmark would make these effects resolvable.
 It did. Five models, **19 camera clips**, CRF 28, paired:
 
@@ -1669,6 +1672,56 @@ changed — because the yardstick did. Wrong checkpoint (§14), wrong codec doma
 (§16), wrong metric direction (§10), wrong aggregation (§26), wrong statistical
 test (§28), insufficient power (§29). Only after all six were fixed did the data
 say something stable.
+
+---
+
+## 31. Conference video prefers the model we replaced
+
+§30's swap is confirmed at a second compression level. CRF 20, 19 camera clips,
+paired against `webcodec`: shipped is worse by ΔDISTS +0.00284, **t = +3.50**,
+and the flicker difference is again not significant (t = -1.06). Both CRFs agree.
+
+**But conference video was never in that benchmark**, and it is a large share of
+what a browser actually plays. Six clips — `vidyo1/3/4`, `FourPeople`, `Johnny`,
+`KristenAndSara` — at height 704 (the sources are 720 tall, so §10's guard
+forbids the usual 1024; these numbers are not comparable to the main benchmark):
+
+| model | cam DISTS | clips won | \|tLP\| vs bic |
+|---|---|---|---|
+| **shipped (pre-§30)** | **+4.2%** | 6/6 | **-0.00163** |
+| webcodec (now shipped) | +3.0% | 6/6 | -0.00083 |
+
+Paired, positive favours the older model:
+
+| | Δ | t | clips |
+|---|---|---|---|
+| ΔDISTS | +0.00182 | +1.88 | 5/6 |
+| Δ\|tLP\| | +0.00080 | **+3.08** | 5/6 |
+
+**On near-static talking heads the model §30 replaced is better** — not quite
+significantly on DISTS, and clearly so on flicker.
+
+**Both models beat bicubic on all six clips**, so the network earns its time on
+this content either way. The question is only which of the two.
+
+**Why this is plausible rather than noise.** Conference video is near-static with
+a flat background; the benchmark is dominated by high-motion nature and sport.
+§19 established that the codec retrain produces a *smoother* model, spatially and
+temporally. Smoothing costs little where everything is moving and costs more
+where a frame is nearly still and the eye can settle on it.
+
+**The swap stands, with the caveat recorded rather than buried.** The 19-clip
+benchmark is larger, covers two CRFs, and gives a significant result at both.
+Six clips at a single CRF cannot outweigh that. But this is the second time
+tonight a content class outside the benchmark has behaved differently from the
+content inside it (§13 was the first), and the honest reading is that **the
+benchmark still does not represent what a browser extension actually plays.**
+
+**The next real gain is a benchmark weighted by what users watch** — conference,
+screen capture, animation and sport in something like their true proportions —
+not another training variant. Every training change tonight was worth ~1.5
+points; choosing the wrong content mix to optimise against is worth more than
+that.
 
 ---
 
