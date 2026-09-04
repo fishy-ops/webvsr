@@ -1170,6 +1170,53 @@ a runtime router.
 
 ---
 
+## 22. EMA and DISTS-as-loss added nothing — and validation stopped predicting
+
+Two techniques taken from the NTIRE 2026 efficient-SR recipes, both used by the
+winner on this same SPAN family: EMA of weights at decay 0.999, and DISTS added
+as a training term (checkpoints were already being *selected* on DISTS while
+nothing in the loss pointed at it). Trained on the corrected codec mix, 40
+epochs, identical to §19's run in every other respect.
+
+Real-camera clips, DISTS against bicubic:
+
+| CRF | codec fix alone | + EMA + DISTS |
+|-----|-----------------|---------------|
+| 20 | +7.9%, 11/12 | +7.9%, 11/12 |
+| 28 | +5.1%, 11/12 | +5.2%, 10/12 |
+| 36 | +3.7%, 11/12 | +3.7%, 10/12 |
+
+**Indistinguishable.** The entire gain was already delivered by the degradation
+fix. Two plausible reasons: EMA earns its keep over long from-scratch schedules
+and these runs fine-tune a converged checkpoint for 40 epochs, and DISTS overlaps
+heavily with the VGG perceptual term already in phase 2 — a second perceptual
+loss pointed at nearly the same thing.
+
+### The part that matters more: validation stopped tracking the benchmark
+
+**Validation DISTS said this run was 4.8% better** — 0.2011 against 0.2113 — and
+the 15-clip video benchmark says it is identical. The validation set is Vimeo
+still frames put through the codec chain; the benchmark is real clips through a
+real encode, scored per clip and split by origin.
+
+That gap is not academic. **Checkpoint selection runs on validation DISTS.**
+Every "best" checkpoint this project has ever saved was chosen by a signal that,
+on this evidence, can move 4.8% while the thing being optimised does not move at
+all. §14 already showed the wrong checkpoint can ship; this shows the selection
+metric itself can be pointing somewhere the benchmark does not follow.
+
+Worth noting the failure is one-directional here — validation was *optimistic*,
+not pessimistic — so nothing already shipped is called into question. But the
+next time validation reports a gain, it should not be believed until the clip
+benchmark agrees.
+
+**What follows:** run the clip benchmark, not validation, when a decision
+depends on the answer. `rank_models.py` exists for exactly this, and it is
+cheap enough — one pass over all candidates — that there is no reason to trust
+the proxy.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
