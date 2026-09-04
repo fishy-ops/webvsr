@@ -1217,6 +1217,46 @@ the proxy.
 
 ---
 
+## 23. A video validation set, so selection can see what the benchmark sees
+
+§22 found the still-frame validation set reporting a 4.8% DISTS gain on a run the
+clip benchmark scored as identical — while **checkpoint selection runs on that
+signal**. §11 found flicker is the one advantage that transfers, and a still-frame
+set cannot measure it at all, so no run has ever been able to select on it.
+
+`training/video_val.py` replaces it with **consecutive frame pairs from five
+held-out clips** — `pedestrian_area`, `red_kayak`, `riverbed`, `rush_hour` and
+`sintel_trailer`, four camera plus one animation to keep §13's band-limited class
+represented. None appear in `clips_busy`: selecting on the benchmark would make
+every number in this file self-confirming. 30 pairs, 5.3 MB, preloaded.
+
+It orders the three checkpoints the way the benchmark does:
+
+| model | DISTS | \|tLP\| |
+|---|---|---|
+| deployed (pre-§17) | 0.1765 | 0.00706 |
+| shipped | 0.1605 | 0.00601 |
+| codec-retrained | **0.1601** | **0.00599** |
+
+The still-frame set got this ordering wrong. This one also separates the
+pre-§17 model clearly, matching the large gap the benchmark reports.
+
+`|tLP|` rather than `tLP`: §10 established 0 is the target and "lower is better"
+is optimised by a constant grey frame, so the deviation is what selection should
+minimise.
+
+**Unexplained and not to be quoted:** overall PSNR across these clips spreads
+33.83 / 42.57 / 45.21 dB, where the benchmark separates the same models by about
+0.3 dB of texture PSNR. A nine-decibel gap is not credible as a like-for-like
+comparison — most likely one clip dominates the mean. DISTS and tLP are what
+this set is for; the PSNR column needs a per-clip breakdown before it is
+believed.
+
+Built, not yet wired into `train_span.py` — swapping the selection signal
+mid-queue would make the running comparisons incommensurable.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
