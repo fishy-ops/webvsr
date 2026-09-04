@@ -874,6 +874,10 @@ existed, on the 4-clip benchmark the renders dominate.
 
 ## 15. Prior art on GitHub, which the arXiv-only search missed
 
+> **The content gate proposed below does not work as specified — see §21.** The
+> ringing signal separates renders from camera footage but cannot identify which
+> *camera* clips the model loses on, which is the distinction that would matter.
+
 §5 notes that arXiv was the wrong corpus for the engineering questions. The
 correction was never made: the research stayed on arXiv, and the working code
 that talented people publish went unread. Three things found in one pass.
@@ -1125,6 +1129,44 @@ preprocessing pass, the shuffle, or the weight export -- those are the three
 places where a silent divergence could open up, and none of them are covered by
 the shader-level comparisons in §10 or §18, which only ever compare the engine
 against itself.
+
+---
+
+## 21. The ringing gate does not work, and what the remaining loss actually is
+
+§15 proposed gating the network on content: run it where bicubic rings, fall back
+where it does not, using §13's mechanism as a no-reference detector. Tested
+against the per-clip results already on disk, no GPU required.
+
+Camera clips only, CRF 28, bicubic's edge sharpness ratio against measured DISTS
+gain:
+
+| model | corr(edge sharpness, gain) | separable by a threshold |
+|---|---|---|
+| shipped | **+0.075** | no |
+| codec-retrained | **+0.259** | no |
+
+**No usable signal.** `dinner_1080p30` has the highest bicubic edge sharpness of
+any camera clip (1.021) and is the largest winner (+15.3%); `controlled_burn`
+loses at 0.765, sitting in the middle of the winners' range (0.290-1.021). The
+ringing measure separates renders from camera footage, which §13 already
+established — and the renders were never the problem.
+
+**The gate idea is not dead, but the signal is wrong.** After the codec retrain
+only **one** camera clip still loses: `controlled_burn_1080p`, at -4.1%. It is
+fire and smoke — pure stochastic texture, temporally chaotic, with no stable
+structure to restore. That is §1's argument again: information that was
+quantised away cannot be recovered, and smoke is nearly all such information.
+
+So a gate would need to detect **stochasticity**, not ringing — something like
+the fraction of high-frequency energy that is temporally incoherent between
+frames, rather than a spatial overshoot measure. Untested, and worth far less
+than it was before: the model now wins 11 of 12 camera clips, so a perfect gate
+would recover about 4% DISTS on one twelfth of content.
+
+**Recorded mainly so the gate is not built on the wrong signal.** The mechanism
+in §13 is real and explains the render clips; it simply does not generalise into
+a runtime router.
 
 ---
 
