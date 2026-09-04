@@ -140,8 +140,11 @@ def main():
         print(f"{r['name']:<14} {dd.mean():+12.5f} {tstat(dd):+7.2f} "
               f"{dt.mean():+12.5f} {tstat(dt):+7.2f} "
               f"{int((dd > 0).sum()):>4}/{len(cam):<2}")
-    print("|t| > 2.2 is significant at 11 df. A large mean with small |t| means "
-          "one clip is carrying it.")
+    from math import sqrt
+    _n = len([c for c in ref_clips if c not in RENDERS and c in base])
+    _crit = 2.10 if _n > 18 else 2.20 if _n > 11 else 2.45
+    print(f"|t| > {_crit:.2f} is significant at {_n-1} df. A large mean with small "
+          "|t| means one clip is carrying it.")
     print(f"raw output: {out}")
 
 

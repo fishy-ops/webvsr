@@ -1,12 +1,12 @@
 {
   "2x": {
     "binary": "extension/models/span_lite_2x_c16.bin",
-    "checkpoint": "checkpoints_c16/best_phase2.pth",
+    "checkpoint": "checkpoints_c16/webcodec_2x_c16.pth",
     "channels": 16,
     "scale": 2,
-    "sha256": "2770ec08710443aab015b7c96d5bad12f873fd3683cb6d520c93f533e8eb1995",
-    "origin": "checkpoints_c16/best_phase2.pth",
-    "superseded": "was ckpt_c16_sharp2/best_phase1.pth, kept at checkpoints_c16/deployed_2x_c16.pth; swapped after it measured worse than bicubic on real camera footage at every CRF"
+    "sha256": "92fa3e9cc3871afd8be4d038c31f4967251d63c6c65a4d4285425893c491269b",
+    "origin": "/tank/webvsr/ckpt_webcodec_2x_c16/best_phase2.pth",
+    "superseded": "was checkpoints_c16/best_phase2.pth; swapped after the widened 19-clip benchmark showed the gain significant (t=3.00, 16/19 clips) and the flicker cost not (t=-0.62)"
   },
   "4x": {
     "binary": "extension/models/span_lite_4x_c16.bin",
