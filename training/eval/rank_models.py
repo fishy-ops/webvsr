@@ -109,6 +109,31 @@ def main():
               f"{r['cam_tlp']:+13.5f} {r['ren_dists']:+12.1f}%")
     print("\n|tLP| vs bic: negative is better (closer to matching the truth's "
           "temporal behaviour; see §10 on why 'lower tLP' is not the rule)")
+
+    # PAIRED comparison against the top model. §28: between-clip tLP variance is
+    # seven times the between-model difference, so a difference of clip-set means
+    # sits at ~0.3 SEM and cannot rank anything. Pairing on the clip cancels that
+    # -- the same data went from unresolvable to t = -2.30. The columns above are
+    # kept because they are readable; these are the numbers to decide on.
+    ref = rows[0]["name"]
+    ref_clips = per_clip(txt, ref)
+    print(f"\nPaired against {ref}, per clip (positive favours {ref}):")
+    print(f"{'model':<14} {'ΔDISTS':>12} {'t':>7} {'Δ|tLP|':>12} {'t':>7} {'clips':>7}")
+    print("-" * 64)
+    for r in rows[1:]:
+        got = per_clip(txt, r["name"])
+        cam = [c for c in got if c not in RENDERS and c in base and c in ref_clips]
+        dd = np.array([got[c]["dists"] - ref_clips[c]["dists"] for c in cam])
+        dt = np.array([abs(got[c].get("tlp", 0)) - abs(ref_clips[c].get("tlp", 0))
+                       for c in cam])
+        def tstat(v):
+            sd = np.std(v, ddof=1)
+            return v.mean() / (sd / np.sqrt(len(v))) if sd > 0 else float("nan")
+        print(f"{r['name']:<14} {dd.mean():+12.5f} {tstat(dd):+7.2f} "
+              f"{dt.mean():+12.5f} {tstat(dt):+7.2f} "
+              f"{int((dd > 0).sum()):>4}/{len(cam):<2}")
+    print("|t| > 2.2 is significant at 11 df. A large mean with small |t| means "
+          "one clip is carrying it.")
     print(f"raw output: {out}")
 
 
