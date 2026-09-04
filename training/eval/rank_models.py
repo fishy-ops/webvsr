@@ -59,12 +59,20 @@ def main():
     ap.add_argument("--clips", default="/tank/webvsr/clips_busy")
     ap.add_argument("--channels", type=int, default=16)
     ap.add_argument("--scale", type=int, default=2)
+    # 1024 is the project default and what every benchmark number uses. It has
+    # to be lowered for sources shorter than that -- §10's guard refuses to
+    # enlarge the HR reference, so a 720p clip aborts the run at 1024. Numbers
+    # from different heights are not comparable to each other.
+    ap.add_argument("--height", type=int, default=1024)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     out = Path(args.out or f"/tank/webvsr/rank_crf{args.crf}.txt")
+    if args.height != 1024:
+        print(f"NOTE: height {args.height}, not the project default 1024 — "
+              f"these numbers are not comparable to the main benchmark.")
     cmd = [sys.executable, "stratified_eval.py", "--clips", args.clips,
-           "--scale", str(args.scale), "--height", "1024",
+           "--scale", str(args.scale), "--height", str(args.height),
            "--crf", str(args.crf), "--frames", str(args.frames)]
     names = []
     for spec in args.models:
