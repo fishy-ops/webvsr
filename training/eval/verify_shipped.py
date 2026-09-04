@@ -86,7 +86,12 @@ def main():
         e = prov.get(args.spec)
         if not e:
             sys.exit(f"no entry '{args.spec}' in {PROV.name}; have {sorted(prov)}")
-        print(f"deployed={e['checkpoint']}:{e['channels']}:{e['scale']}")
+        # Absolute: the evals run from training/eval, so a repo-root-relative
+        # path resolves to nothing there. That silently failed a whole chain.
+        ck = Path(e["checkpoint"])
+        if not ck.is_absolute():
+            ck = ROOT / ck
+        print(f"deployed={ck}:{e['channels']}:{e['scale']}")
         return
 
     rows = [check(name, e, args.python) for name, e in sorted(prov.items())]
