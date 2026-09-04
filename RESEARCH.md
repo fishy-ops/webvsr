@@ -1459,6 +1459,10 @@ per-frame definition right and the error reappeared in the mean over clips.
 
 ## 27. Final ranking, and a decision that is a real trade
 
+> **The perceptual advantage below is not statistically significant — see §29.**
+> Paired at n=12 it is t = -1.74, and the codec model beats shipped on only 8 of
+> 12 clips. The trade is weaker in one direction than this section presents.
+
 `rank_models.py` over the 12 real-camera clips, criteria fixed in §14/§11 before
 any of these numbers existed: camera DISTS first, then |tLP| deviation, then
 clips won.
@@ -1555,6 +1559,52 @@ were not.
 **Motion is a partial contributor, not the explanation.** `corr(motion, |tLP|)`
 is +0.36, so faster clips do carry larger tLP magnitudes — but that accounts for
 about 13% of the variance. The dominant term is simply that clips differ.
+
+---
+
+## 29. The benchmark is underpowered for the effects being chased
+
+§28 established that these comparisons must be paired. Applying that to the
+CRF 28 ranking, against the currently shipped model, 12 camera clips:
+
+| model | ΔDISTS | t | sig | Δ\|tLP\| | t | sig | clips better |
+|---|---|---|---|---|---|---|---|
+| webcodec | -0.00180 | -1.74 | **no** | +0.00145 | +2.19 | no | 8/12 |
+| ema_dists | -0.00186 | -1.73 | **no** | +0.00155 | **+2.26** | **yes** | 7/12 |
+| masked_twin | -0.00101 | -0.81 | no | +0.00164 | +2.12 | no | 6/12 |
+
+**None of the perceptual gains reported tonight are significant at n=12.** The
+codec retrain's DISTS advantage — quoted throughout as "+5.1% against +3.7%" —
+is t = -1.74, and it beats the shipped model on 8 of 12 clips. The flicker
+regression is the better-established effect of the two, and for `ema_dists` it is
+the only significant result in the table.
+
+**This does not overturn §19's direction.** The codec model was better on DISTS at
+CRF 20, 28 and 36 and on both clip groups, and consistency across independent
+conditions is evidence that a single t-test does not capture. But "consistently
+ahead" and "significantly ahead" are different claims, and this file has been
+making the second while measuring the first.
+
+**The real finding is that the benchmark cannot resolve the effects being
+chased.** Per-clip DISTS differences between two decent models are on the order
+of 0.002 against a between-clip spread an order of magnitude larger. Twelve
+camera clips gives roughly enough power to detect a 5-percentage-point change —
+which is what §17's swap was, and why that one was unambiguous — and not enough
+for the 1.4-point changes every subsequent experiment has produced.
+
+**Consequences.**
+
+1. **More clips, not more techniques.** Going from 12 to ~40 camera clips would
+   roughly halve the detectable effect. That is a few hours of downloading and
+   one longer evaluation, against a night of training runs whose results cannot
+   be distinguished from zero.
+2. **§17's swap stands comfortably.** Deployed to candidate was about -1.2% to
+   +3.7%, roughly four times the effect size here, on a metric where the model
+   was starting from *worse than bicubic*.
+3. **The swap in §27 remains held**, now for a better reason: its benefit is
+   unproven and its cost is the more significant of the two effects.
+4. Report `t` and clips-better alongside every mean from here. `rank_models.py`
+   now does this automatically.
 
 ---
 
