@@ -1280,6 +1280,60 @@ principle.
 
 ---
 
+## 24. Flicker does not rank models consistently across content
+
+§23 disqualified the video validation set because it ranked the codec-retrained
+model best on |tLP| where the benchmark ranked it worst, and blamed the likely
+cause: four held-out clips against twelve. That was testable. The held-out set
+was widened to **eleven clips, ten of them camera** — adding video-conference
+content, which is a large share of real web video and was absent from both sets —
+giving 60 usable pairs.
+
+**DISTS agreement became strong:**
+
+| model | DISTS (held-out) | benchmark ordering |
+|---|---|---|
+| deployed (pre-§17) | 0.2130 | worst |
+| shipped | 0.2022 | better |
+| codec-retrained | **0.2008** | best |
+| EMA+DISTS | 0.2011 | tied with codec-retrained |
+
+That reproduces every ordering the 15-clip benchmark reports, including §22's
+null result — EMA+DISTS at 0.2011 against the codec run's 0.2008 is the same
+"indistinguishable" the benchmark found, arrived at independently.
+
+**The flicker disagreement did not go away:**
+
+| model | benchmark \|tLP\| | held-out \|tLP\| |
+|---|---|---|
+| shipped | 0.00982 (better) | 0.00913 |
+| codec-retrained | 0.01202 (worse) | **0.00822** (better) |
+
+Opposite orderings on two sets of real camera clips, both put through real
+encodes. With 10 clips against 12 this is no longer a small-sample story.
+
+**The honest reading is that tLP ranks models differently depending on content.**
+The benchmark clips are largely high-motion nature — `park_joy`, `crowd_run`,
+`ducks_take_off`; the held-out set is more mixed, including near-static
+conference video. A model's temporal behaviour evidently depends on how much
+motion it is given, and the two sets disagree about which model handles that
+better.
+
+**This qualifies §11.** That section found tLP improving by an identical +0.0030
+on both the render and camera groups *within one clip set*, and concluded flicker
+was the advantage that transfers. It transfers across content *type* within that
+set; it does not transfer across clip sets. That is a weaker claim than the one
+recorded, and any plan resting on "select on flicker" — including the one
+proposed at the end of §11 — needs it.
+
+**Consequences.** The held-out set is now usable for **DISTS** selection, where it
+agrees with the benchmark on four checkpoints including a null. It is not usable
+for **flicker** selection, and neither is the benchmark, until it is understood
+why they disagree. The cheapest next probe is whether tLP tracks scene motion —
+if it does, the metric needs normalising by motion before it can rank anything.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
