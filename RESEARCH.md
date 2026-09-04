@@ -1230,30 +1230,53 @@ held-out clips** — `pedestrian_area`, `red_kayak`, `riverbed`, `rush_hour` and
 represented. None appear in `clips_busy`: selecting on the benchmark would make
 every number in this file self-confirming. 30 pairs, 5.3 MB, preloaded.
 
-It orders the three checkpoints the way the benchmark does:
+### The 9 dB PSNR spread was a defect in the set, now fixed
 
-| model | DISTS | \|tLP\| |
-|---|---|---|
-| deployed (pre-§17) | 0.1765 | 0.00706 |
-| shipped | 0.1605 | 0.00601 |
-| codec-retrained | **0.1601** | **0.00599** |
+The first version reported PSNR of 33.83 / 42.57 / 45.21 for three checkpoints
+the benchmark separates by ~0.3 dB. The per-clip breakdown found it immediately:
 
-The still-frame set got this ordering wrong. This one also separates the
-pre-§17 model clearly, matching the large gap the benchmark reports.
+| clip | deployed | shipped | webcodec |
+|---|---|---|---|
+| pedestrian_area | 27.59 | 27.55 | 27.61 |
+| red_kayak | 24.86 | 24.82 | 24.84 |
+| riverbed | 25.50 | 25.41 | 25.47 |
+| rush_hour | 28.21 | 27.87 | 28.14 |
+| **sintel_trailer** | **62.99** | **107.22** | **120.00** |
+
+The four camera clips agree within 0.35 dB. `sintel_trailer`'s fades are
+near-constant frames — MSE around 1e-12, so PSNR runs to 120 dB — and one clip
+was moving the five-clip mean by nine decibels while carrying no information
+about any model. Pairs whose ground truth has variance below 1e-4 are now
+dropped (6 of 30), and aggregation is by median rather than mean.
+
+| model | PSNR | DISTS | \|tLP\| |
+|---|---|---|---|
+| deployed (pre-§17) | 26.51 | 0.2040 | 0.00765 |
+| shipped | 26.43 | **0.1916** | 0.00797 |
+| codec-retrained | 26.51 | 0.1919 | **0.00594** |
 
 `|tLP|` rather than `tLP`: §10 established 0 is the target and "lower is better"
-is optimised by a constant grey frame, so the deviation is what selection should
-minimise.
+is optimised by a constant grey frame.
 
-**Unexplained and not to be quoted:** overall PSNR across these clips spreads
-33.83 / 42.57 / 45.21 dB, where the benchmark separates the same models by about
-0.3 dB of texture PSNR. A nine-decibel gap is not credible as a like-for-like
-comparison — most likely one clip dominates the mean. DISTS and tLP are what
-this set is for; the PSNR column needs a per-clip breakdown before it is
-believed.
+### It is NOT yet fit to select on
 
-Built, not yet wired into `train_span.py` — swapping the selection signal
-mid-queue would make the running comparisons incommensurable.
+PSNR is now sane and DISTS still ranks the pre-§17 model last, which is the
+ordering that matters most. **But flicker disagrees with the benchmark.** Here
+the codec-retrained model has the best |tLP| (0.00594 against 0.00797); §19
+measured it as clearly *worse* than shipped on the 15-clip set.
+
+Four held-out camera clips against twelve benchmark clips is a plausible reason —
+small samples, different content, median against per-clip mean — and the
+benchmark should be weighted higher on count alone. But the disagreement is on
+**the exact metric this set was built to measure**, which is disqualifying for
+now. Ordering three known checkpoints correctly was necessary, not sufficient,
+and on flicker it does not even do that.
+
+**Not wired into `train_span.py`.** Two reasons: swapping the selection signal
+mid-queue would make the running comparisons incommensurable, and it has not
+earned the job. The test it has to pass is whether the checkpoint it picks beats
+the checkpoint the old signal picks — measured on the benchmark, not argued from
+principle.
 
 ---
 

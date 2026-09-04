@@ -29,6 +29,7 @@ class VideoPairVal:
         self.device = device
         man = json.loads((self.root / "manifest.json").read_text())
         self.items = []
+        self.dropped = []
         for m in man:
             d = self.root / m["clip"]
             lp, lc, hp, hc = (
@@ -44,7 +45,19 @@ class VideoPairVal:
             w = min(lp.shape[3], hp.shape[3] // 2)
             lp, lc = lp[:, :, :h, :w], lc[:, :, :h, :w]
             hp, hc = hp[:, :, :2 * h, :2 * w], hc[:, :, :2 * h, :2 * w]
+            # Drop degenerate frames. sintel_trailer's fades are near-constant,
+            # and a near-constant target has MSE ~1e-12 -- it scored 120 dB and
+            # dragged the mean across five clips by 9 dB while carrying no
+            # information about the model. Anything this flat cannot discriminate
+            # between checkpoints on any metric.
+            if float(hc.var()) < 1e-4:
+                self.dropped.append(f"{m['clip']}[{m['curr']}]")
+                continue
             self.items.append((lp, lc, hp, hc))
+        if self.dropped:
+            print(f"VideoPairVal: dropped {len(self.dropped)} near-constant "
+                  f"pairs ({', '.join(self.dropped[:4])}"
+                  f"{'...' if len(self.dropped) > 4 else ''})")
         if not self.items:
             raise ValueError(f"no usable pairs in {self.root}")
 
@@ -86,5 +99,12 @@ def validate_video(model, vset, device, perc, depth=None):
         lo_out, lo_gt = perc.lp(sr_c, sr_p), perc.lp(hr_c, hr_p)
         if lo_out is not None and lo_gt is not None:
             tlps.append(abs(lo_out - lo_gt))
-    m = lambda xs: (sum(xs) / len(xs)) if xs else None
-    return m(psnrs), m(dists), m(tlps)
+    def agg(xs):
+        # Median, not mean. Even after dropping degenerate frames, PSNR is
+        # unbounded above and one easy clip can set the level for all of them.
+        if not xs:
+            return None
+        xs = sorted(xs)
+        n = len(xs)
+        return xs[n // 2] if n % 2 else 0.5 * (xs[n // 2 - 1] + xs[n // 2])
+    return agg(psnrs), agg(dists), agg(tlps)
