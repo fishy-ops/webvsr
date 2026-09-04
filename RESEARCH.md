@@ -1099,6 +1099,35 @@ rather than by whichever run finished last.
 
 ---
 
+## 20. The engine matches PyTorch, so the measurements describe what ships
+
+Every quality number in this file is measured in PyTorch. Users get the WGSL
+engine. Nothing had ever checked that the two agree, and a mismatch in the mean
+subtraction, the `img_range` scale, the pixel-shuffle indexing or the final
+colour conversion would have been invisible to every evaluation here and visible
+in every frame a user sees.
+
+One real codec-degraded 256x256 LR crop, the shipped 2x weights, PyTorch output
+against the browser's, **with f16 active in the engine**:
+
+| | |
+|---|---|
+| max abs diff | **1** / 255 |
+| mean abs diff | 0.0243 |
+| pixels off by more than 8 | **0** |
+
+That is float rounding and nothing else. The evaluation apparatus predicts
+delivered quality, and the f16 decision holds on real content end to end rather
+than only against an f32 engine.
+
+`dev/parity_check.html` is the check. Worth re-running after any change to the
+preprocessing pass, the shuffle, or the weight export -- those are the three
+places where a silent divergence could open up, and none of them are covered by
+the shader-level comparisons in §10 or §18, which only ever compare the engine
+against itself.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
