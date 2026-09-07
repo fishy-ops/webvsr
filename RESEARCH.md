@@ -1771,6 +1771,62 @@ inside the run-to-run noise band.
 
 ---
 
+## 33. How other people actually train SPAN
+
+The official [SPAN repo](https://github.com/hongyuanyu/SPAN) (Apache 2.0) ships
+`span_arch.py` and **no training config** — the recipe is not published. The
+practitioner frameworks are where real configs live.
+[neosr](https://github.com/neosr-project/neosr)'s `train_span_otf.toml` is the
+closest thing to a reference recipe for this architecture:
+
+| | neosr SPAN | this project |
+|---|---|---|
+| patch size | **64** | 256 |
+| batch | 8 | 16 (8 with DISTS) |
+| optimizer | **Adan schedule-free**, lr **1e-3**, warmup 1600 | Adam, lr 5e-5 cosine |
+| EMA | 0.999 | 0.999 (tested, §22: null) |
+| pixel loss | — | Charbonnier |
+| **MSSIM** | **1.0** | **not used** |
+| **consistency** (Oklab colour) | **1.0** | **not used** |
+| LDL | 1.0 | tested, §30: null |
+| **FDL** (DINOv2 backbone) | **0.75** | plain FFT L1 instead |
+| perceptual | — | VGG 0.1 |
+| GAN | 0.3 | forbidden |
+| degradation | Real-ESRGAN second-order, synthetic | **real codec round-trip** |
+
+**Four things worth taking, none of them tried here.**
+
+1. **MSSIM as a loss.** Structural similarity, no discriminator, weight 1.0 in
+   their recipe. We have no structural term at all — Charbonnier is pointwise and
+   VGG is feature-space.
+2. **A colour-consistency loss.** Oklab/CIE-L* based. Directly relevant to codec
+   chroma subsampling, which our degradation chain produces and nothing in our
+   loss looks at.
+3. **FDL instead of plain FFT.** Ours is L1 on the spectrum; theirs matches
+   frequency *distributions* through a pretrained backbone, reported as more
+   robust to misalignment.
+4. **The optimiser and patch size are a whole unexplored axis.** They train on
+   **64px patches at lr 1e-3** with a schedule-free optimiser; we use 256px at
+   5e-5. Sixteen times fewer pixels per sample and twenty times the learning
+   rate. Not comparable directly — they train from scratch, we fine-tune — but
+   nothing here has ever varied patch size or optimiser.
+
+**One place we are ahead.** Their degradation is the synthetic Real-ESRGAN chain:
+blur, resize, noise, JPEG, twice, plus a sinc filter. Ours is a **real codec
+round-trip** across x264/x265/VP9/AV1/mpeg4 (§16), which is a closer match to what
+a browser extension meets than any synthetic approximation. §19 measured that
+change as worth ~1.5 points, and it is the one axis where this project's setup is
+better targeted than the reference recipe.
+
+**Caveat on all of it.** §30 tested three techniques from the NTIRE 2026 winner's
+recipe on this architecture — EMA, DISTS-as-loss, LDL — and all three were
+statistically indistinguishable from not using them. neosr's weights are tuned
+for a GAN-based recipe at 64px from scratch; there is no reason to expect them to
+transfer to a 256px non-GAN fine-tune, and the base rate for imported techniques
+in this codebase is currently **zero for five**.
+
+---
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
