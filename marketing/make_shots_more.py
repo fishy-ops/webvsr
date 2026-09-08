@@ -29,8 +29,8 @@ from find_crops import score_windows
 W, H, PAD = 1280, 800, 56
 OUT = Path("assets/screenshots")
 
-CLIPS = [("old_town_cross_1080p50", "Architecture"), ("park_joy_1080p50", "Crowds & foliage"),
-         ("tractor_1080p25", "Machinery"), ("station2_1080p25", "Signage & structure")]
+CLIPS = [("tractor_1080p25", "Machinery"), ("pedestrian_area_1080p25", "People & street signs"),
+         ("touchdown_pass_1080p", "Sport"), ("factory_1080p30", "Colour & flat shading")]
 
 
 def lockup(im, d, x=PAD, y=34):
@@ -63,7 +63,7 @@ def shot_breadth():
     for i, (stem, label) in enumerate(CLIPS):
         cx = PAD + (i % 2) * (cw + 22)
         cy = 140 + (i // 2) * (ch + 30)
-        s = make_set(f"src/{stem}.mp4", 12)
+        s = make_set(f"src/{stem}.mp4", 15)
         ranked = score_windows(s, crop=180, stride=60)
         if not ranked:
             continue

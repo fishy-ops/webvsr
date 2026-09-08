@@ -27,10 +27,10 @@ from pipeline import load_shipped, codec_downscale, bicubic_up, model_up
 
 # (clip, crop-x, crop-y) -- each window is 100% pixels, chosen to hold detail
 SCENES = [
-    ("src/old_town_cross_1080p50.mp4", 520, 320),
-    ("src/park_joy_1080p50.mp4",       440, 300),
-    ("src/tractor_1080p25.mp4",        560, 300),
-    ("src/station2_1080p25.mp4",       420, 300),
+    ("src/tractor_1080p25.mp4",          420, 260),
+    ("src/pedestrian_area_1080p25.mp4",  380, 200),
+    ("src/touchdown_pass_1080p.mp4",     420, 240),
+    ("src/speed_bag_1080p.mp4",          300, 240),
 ]
 CW, CH = 1280, 720
 FPS = 25

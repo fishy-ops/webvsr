@@ -24,11 +24,18 @@ W, H, PAD = 1280, 800, 56
 OUT = Path("assets/screenshots")
 
 
-def load():
-    c = Path("src/_otc.pt")
+def load(stem="tractor_1080p25", frame=15):
+    """Cached before/after set for a clip.
+
+    Source clips were swapped away from the original Xiph city footage: those
+    sequences are grainy in the ORIGINAL, so a comparison built on them shows
+    the camera's noise as much as the model's work. These have hard edges and
+    saturated colour, where reconstruction is actually visible.
+    """
+    c = Path(f"src/_set_{stem}.pt")
     if c.exists():
         return torch.load(c, weights_only=False)
-    s = make_set("src/old_town_cross_1080p50.mp4", 20)
+    s = make_set(f"src/{stem}.mp4", frame)
     torch.save(s, c)
     return s
 
@@ -92,16 +99,17 @@ def pair(s, region, scale, headline, note, out):
 
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
-    s = load()
-    pair(s, (700, 452, 596, 524), 1.0,
+    # 100%: the tractor — hard edges, saturated paint, machinery detail
+    pair(load("tractor_1080p25"), (620, 300, 596, 524), 1.0,
          "The same frame, the same instant.",
          "Public-domain test footage played at 540p — the resolution a browser actually "
          "receives — then upscaled to 1080p. Left is what your browser shows today. "
          "Right is Crisp. No zoom, no crop, no second sharpening pass.",
          "01_proof.png")
-    pair(s, (1112, 715, 199, 175), 3.0,
+    # 3x: touchdown_pass scored the largest genuine gain of the four clips
+    pair(load("touchdown_pass_1080p"), (1500, 560, 199, 175), 3.0,
          "Closer, on the same pixels.",
          "The identical 199x175 patch from both frames, enlarged 3x with nearest-neighbour, "
-         "so you are looking at real pixels and not a smoothing filter. Letter edges tighten, "
-         "the roofline separates, and the windows below stop bleeding into the wall.",
+         "so you are looking at real pixels and not a smoothing filter. Edges tighten and "
+         "detail separates instead of smearing together.",
          "02_detail.png")
