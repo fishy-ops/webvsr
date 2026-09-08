@@ -95,8 +95,16 @@ def to_pil(t):
         (t[0].permute(1, 2, 0).numpy() * 255).round().astype(np.uint8))
 
 
-def make_set(clip, frame_index, crf=28, scale=2):
-    """Everything needed for one comparison, aligned pixel-for-pixel."""
+def make_set(clip, frame_index, crf=28, scale=2, sharpen=3.5, look="vivid"):
+    """Everything needed for one comparison, aligned pixel-for-pixel.
+
+    The "after" side runs the FULL shipped chain -- network, then the
+    contrast-adaptive sharpen, then the look grade -- because that is what a
+    user with those settings actually sees. Earlier versions of this function
+    stopped after the network and therefore under-sold the extension.
+    """
+    from looks import grade
+    import numpy as _np
     hr = read_frame(clip, frame_index)
     h, w = hr.shape[-2:]
     hr = hr[:, :, : (h // (2 * scale)) * (2 * scale), : (w // (2 * scale)) * (2 * scale)]
@@ -104,9 +112,38 @@ def make_set(clip, frame_index, crf=28, scale=2):
     model = load_shipped(scale)
     before = bicubic_up(lr, scale)
     after = model_up(model, lr)
+    if sharpen:
+        after = rcas_sharpen(after, sharpen)
+    if look and look != "natural":
+        a = grade(after[0].permute(1, 2, 0).numpy(), look)
+        after = torch.from_numpy(a).permute(2, 0, 1).unsqueeze(0)
     # The encode can land a pixel off on odd sizes; crop all to the common size
     # rather than resampling, which would blur one side of the comparison.
     hh = min(hr.shape[-2], before.shape[-2], after.shape[-2])
     ww = min(hr.shape[-1], before.shape[-1], after.shape[-1])
     cut = lambda t: t[:, :, :hh, :ww]
     return {"hr": cut(hr), "before": cut(before), "after": cut(after), "lr": lr}
+
+
+def rcas_sharpen(img, strength):
+    """The extension's contrast-adaptive sharpen, mirrored from SHADER_SHARPEN.
+
+    This was missing from every comparison image built before now: the Python
+    pipeline ran the network only, while the extension applies this pass on top.
+    So the "after" side was showing LESS than a real user gets. The clamp to the
+    local min/max is what keeps a high strength from ringing -- it is why 3.5 is
+    usable here at all, where a plain unsharp mask would halo badly.
+
+    img: (1,3,H,W) in [0,1].
+    """
+    import torch.nn.functional as _F
+    p = _F.pad(img, (1, 1, 1, 1), mode="replicate")
+    c = img
+    l = p[:, :, 1:-1, :-2]
+    r = p[:, :, 1:-1, 2:]
+    t = p[:, :, :-2, 1:-1]
+    b = p[:, :, 2:, 1:-1]
+    sharp = c + strength * (4.0 * c - l - r - t - b)
+    mn = torch.minimum(c, torch.minimum(torch.minimum(l, r), torch.minimum(t, b)))
+    mx = torch.maximum(c, torch.maximum(torch.maximum(l, r), torch.maximum(t, b)))
+    return torch.clamp(torch.max(torch.min(sharp, mx), mn), 0.0, 1.0)

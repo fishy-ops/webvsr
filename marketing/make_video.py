@@ -23,14 +23,15 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).parent))
 from brand3 import INK, GROUND, GREEN, DULL, font, track, track_width
-from pipeline import load_shipped, codec_downscale, bicubic_up, model_up
+from pipeline import load_shipped, codec_downscale, bicubic_up, model_up, rcas_sharpen
+from looks import grade
 
 # (clip, crop-x, crop-y) -- each window is 100% pixels, chosen to hold detail
 SCENES = [
+    ("src/anime_bbb.mp4",                340, 200),
     ("src/tractor_1080p25.mp4",          420, 260),
+    ("src/anime_sintel.mp4",             340, 180),
     ("src/pedestrian_area_1080p25.mp4",  380, 200),
-    ("src/touchdown_pass_1080p.mp4",     420, 240),
-    ("src/speed_bag_1080p.mp4",          300, 240),
 ]
 CW, CH = 1280, 720
 FPS = 25
