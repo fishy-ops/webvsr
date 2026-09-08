@@ -168,9 +168,16 @@ class SRDataset(Dataset):
 
     def __init__(self, data_dirs, crop_size=256, scale=2,
                  use_degradation=True, min_size=256, clean_ratio=0.3,
-                 degrade_fn=None):
+                 degrade_fn=None, twin=False):
         self.crop_size = crop_size
         self.scale = scale
+        # twin: emit a SECOND, independently degraded LR of the same HR crop.
+        # The engine sees each frame alone, so flicker is the model answering
+        # differently to the codec noise that differs between two frames of
+        # near-identical content. Two draws of the degradation from one crop is
+        # exactly that situation, and it needs no video -- the HR is shared, so
+        # any difference between the two outputs is error by construction.
+        self.twin = twin
         self.use_degradation = use_degradation
         self.min_size = min_size
         self.clean_ratio = clean_ratio
@@ -244,19 +251,29 @@ class SRDataset(Dataset):
         hr_pil = random_crop(img, self.crop_size)
         hr = self.to_tensor(hr_pil)
 
-        if self.use_degradation and random.random() > self.clean_ratio:
-            lr = self.degrade_fn(hr, self.scale)
-        else:
+        def _degrade():
+            if self.use_degradation and random.random() > self.clean_ratio:
+                return self.degrade_fn(hr, self.scale)
             h, w = hr.shape[1], hr.shape[2]
-            lr = F.interpolate(
+            return F.interpolate(
                 hr.unsqueeze(0),
                 size=(h // self.scale, w // self.scale),
                 mode="bicubic",
                 align_corners=False,
             ).squeeze(0).clamp(0, 1)
 
+        lr = _degrade()
+        if not self.twin:
+            hr, lr = augment_pair(hr, lr)
+            return lr, hr
+
+        lr2 = _degrade()
+        # One flip/rotation for all three, so the twin stays pixel-aligned.
+        state = random.getstate()
         hr, lr = augment_pair(hr, lr)
-        return lr, hr
+        random.setstate(state)
+        _, lr2 = augment_pair(hr.clone(), lr2)
+        return lr, lr2, hr
 
 
 class ValidationDataset(Dataset):

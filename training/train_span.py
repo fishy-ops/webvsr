@@ -286,6 +286,37 @@ def train():
     # precisely aimed at §21's remaining failure, which is stochastic texture.
     parser.add_argument("--w-ldl", type=float, default=0.0,
                         help="weight on the LDL artifact-map-weighted pixel loss")
+    # The three terms neosr's SPAN recipe uses that this project never had
+    # (RESEARCH.md 33). Their weights there are tuned for a GAN recipe training
+    # from scratch at 64px; these defaults are off, and the runs that use them
+    # set the weight explicitly.
+    parser.add_argument("--w-mssim", type=float, default=0.0,
+                        help="weight on 1-MS-SSIM. The only structural term "
+                             "available; needs a crop of at least 176px")
+    parser.add_argument("--w-color", type=float, default=0.0,
+                        help="weight on Oklab chroma + blurred CIE L* agreement. "
+                             "Aimed at the 4:2:0 chroma loss the codec "
+                             "degradation deliberately introduces")
+    parser.add_argument("--w-fdl", type=float, default=0.0,
+                        help="weight on the Frequency Distribution Loss "
+                             "(misalignment-robust feature-statistics matching)")
+    # The other half of RESEARCH.md 33's fourth item. neosr trains SPAN with a
+    # schedule-free optimiser at a constant 1e-3 after warmup; this project uses
+    # AdamW at 5e-5 on a cosine decay. The §33 control run measured what that
+    # buys: 40 epochs moved val DISTS 0.2007 -> 0.2001, so the fine-tune is
+    # barely moving at all and the learning rate is the obvious suspect.
+    #
+    # Schedule-free keeps two weight sets -- the iterate it steps from and the
+    # average it evaluates -- so the optimiser must be put in eval() mode before
+    # validating OR saving, or the checkpoint on disk is not the model that was
+    # scored. Same failure the EMA path already guards against.
+    parser.add_argument("--optimizer", choices=["adamw", "adamw_sf"],
+                        default="adamw",
+                        help="adamw_sf = AdamWScheduleFree: constant lr after "
+                             "warmup, no cosine decay")
+    parser.add_argument("--warmup-steps", type=int, default=1600,
+                        help="adamw_sf only: optimizer steps of linear warmup "
+                             "(neosr uses 1600)")
     parser.add_argument("--lr", type=float, default=None,
                         help="override CONFIG['lr']; the 5e-4 default is a "
                              "from-scratch rate and will damage a converged "
@@ -405,13 +436,29 @@ def train():
     print(f"Val:   {len(val_dataset)} images")
 
     # ── Optimizer & scheduler ───────────────────────────────────────
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=cfg["lr"],
-        betas=(0.9, 0.99),
-        weight_decay=cfg["weight_decay"],
-    )
-    scheduler = build_scheduler(optimizer, cfg["total_epochs"])
+    if args.optimizer == "adamw_sf":
+        import schedulefree
+        optimizer = schedulefree.AdamWScheduleFree(
+            model.parameters(),
+            lr=cfg["lr"],
+            betas=(0.9, 0.99),
+            weight_decay=cfg["weight_decay"],
+            warmup_steps=args.warmup_steps,
+        )
+        # Schedule-free sets its own rate; a cosine LambdaLR on top would decay
+        # the thing whose whole claim is that it does not need decaying.
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _e: 1.0)
+        print(f"AdamWScheduleFree: constant lr {cfg['lr']:.1e} after "
+              f"{args.warmup_steps} warmup steps, no decay")
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=cfg["lr"],
+            betas=(0.9, 0.99),
+            weight_decay=cfg["weight_decay"],
+        )
+        scheduler = build_scheduler(optimizer, cfg["total_epochs"])
+    sf_opt = optimizer if args.optimizer == "adamw_sf" else None
     scaler = GradScaler()
 
     # ── Resume / phase logic ────────────────────────────────────────
@@ -480,12 +527,17 @@ def train():
         criterion = CombinedLoss(
             w_dists=args.w_dists,
             w_ldl=args.w_ldl,
+            w_mssim=args.w_mssim,
+            w_color=args.w_color,
+            w_fdl=args.w_fdl,
             w_perceptual=cfg["w_perceptual"],
             w_fft=cfg["w_fft"],
             use_perceptual=use_perceptual,
         ).to(device)
 
         model.train()
+        if sf_opt is not None:
+            sf_opt.train()
         epoch_loss = 0
         loss_components = {}
         batch_count = 0
@@ -604,6 +656,10 @@ def train():
         # weights: validating one set and saving another would make the
         # selection metric describe a checkpoint that was never written.
         ema_backup = ema.swap_in(model) if ema else None
+        if sf_opt is not None:
+            # Everything from here to the end of the epoch -- validation and
+            # every save_checkpoint below -- must see the averaged iterate.
+            sf_opt.eval()
 
         if epoch % 5 == 0 or epoch == cfg["phase1_epochs"] - 1 or epoch == cfg["total_epochs"] - 1:
             if multi_exit:
