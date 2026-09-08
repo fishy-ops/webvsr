@@ -131,7 +131,10 @@ def motion(out):
     d = ImageDraw.Draw(im)
     lockup(im, d)
     d.text((PAD, 82), "It holds up in motion.", font=font(30, 680), fill=INK)
-    src = Image.fromarray(frames[min(22, len(frames) - 1)])
+    # Frame 89 rather than 22: the tractor scene is visually busy, so a viewer
+    # cannot tell what changed. This one is a large simple shape with the wipe
+    # divider near the middle, so both halves are readable at a glance.
+    src = Image.fromarray(frames[min(89, len(frames) - 1)])
     iw = W - 2 * PAD
     ih = int(src.height * iw / src.width)
     im.paste(src.resize((iw, ih), Image.LANCZOS), (PAD, 140))
