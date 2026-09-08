@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Video Upscaler & Enhancer",
+  "name": "Crisp \u2014 AI Video Quality Enhancer, Upscaler & Sharpener for Blurry Video",
+  "short_name": "Crisp",
   "version": "1.0.2",
-  "description": "Makes blurry, low-quality video look sharper and clearer, right in your browser. Runs on your computer, and it's free and private.",
+  "description": "Sharpens blurry, low-quality video as it plays, on any site. Free, runs on your own computer, nothing uploaded.",
   "permissions": [
     "activeTab",
     "storage"

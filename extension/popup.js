@@ -1,17 +1,22 @@
 let settings = {
-  perfMode: 'max', quality: 'quality', targetScale: 2,
+  power: 'auto', targetScale: 2,
   autoPause: true, rememberState: true, showStats: true, sharpness: 1.4,
+  look: 'natural',
 };
 
-const PERF_HINT = {
-  light: 'Easiest on your graphics card and the smoothest. Does a little less work each frame.',
-  balanced: 'The one we recommend. Keeps video smooth while still cleaning it up.',
-  max: 'Goes all out on every frame for the best quality. Can lower the frame rate on slower machines.',
+const POWER_HINT = {
+  auto: 'Enhances at the video\u2019s own resolution and steps aside if your machine can\u2019t keep up. Right for almost everyone.',
+  battery: 'Caps very large video at 720p and gives up sooner, to keep fans quiet and battery drain down.',
+  max: 'Keeps enhancing even if the frame rate dips. Choose this if you care more about the picture than perfect smoothness.',
 };
-const QUAL_HINT = {
-  fast: 'The lightest setting. Good if your computer is on the slower side.',
-  medium: 'A nice middle ground between detail and speed.',
-  quality: 'Full detail. Pair it with Balanced or Light if you want to keep things smooth.',
+
+// A look is a grade on top of the reconstruction, never part of it: 'Natural'
+// applies exactly nothing, so what you see there is only what the model recovered.
+const LOOK_HINT = {
+  natural: 'No colour changes at all — just the sharper picture the model recovers.',
+  bright: 'Lifts shadows and adds a little warmth. Good for dim or flat-looking video.',
+  vivid: 'Stronger contrast and richer colour. Best on daylight and outdoor footage.',
+  cinematic: 'Deeper contrast with cooler shadows, for a filmic look.',
 };
 
 function renderSeg(id, value) {
@@ -80,13 +85,13 @@ function renderSharp() {
 }
 
 function render() {
-  renderSeg('perf', settings.perfMode);
-  renderSeg('quality', settings.quality);
+  renderSeg('power', settings.power || 'auto');
   renderSeg('scale', settings.targetScale);
+  renderSeg('look', settings.look || 'natural');
   renderSharp();
-  document.getElementById('perfHint').textContent = PERF_HINT[settings.perfMode] || '';
-  document.getElementById('qualHint').textContent = QUAL_HINT[settings.quality] || '';
+  document.getElementById('powerHint').textContent = POWER_HINT[settings.power || 'auto'] || '';
   document.getElementById('scaleHint').innerHTML = scaleHint(settings.targetScale);
+  document.getElementById('lookHint').textContent = LOOK_HINT[settings.look || 'natural'] || '';
   document.getElementById('autoEngage').checked = !!settings.autoEngage;
   document.getElementById('autoPause').checked = !!settings.autoPause;
   document.getElementById('rememberState').checked = !!settings.rememberState;
@@ -106,10 +111,10 @@ function save(patch) {
   render();
 }
 
-document.querySelectorAll('#perf button').forEach((b) =>
-  b.addEventListener('click', () => save({ perfMode: b.dataset.v })));
-document.querySelectorAll('#quality button').forEach((b) =>
-  b.addEventListener('click', () => save({ quality: b.dataset.v })));
+document.querySelectorAll('#power button').forEach((b) =>
+  b.addEventListener('click', () => save({ power: b.dataset.v })));
+document.querySelectorAll('#look button').forEach((b) =>
+  b.addEventListener('click', () => save({ look: b.dataset.v })));
 document.querySelectorAll('#scale button').forEach((b) =>
   b.addEventListener('click', () => save({ targetScale: parseFloat(b.dataset.v) })));
 document.querySelectorAll('#sharp button').forEach((b) =>

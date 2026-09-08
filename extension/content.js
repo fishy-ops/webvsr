@@ -1,5 +1,5 @@
 /**
- * WebVSR Content Script
+ * Crisp Content Script
  *
  * Detects <video> elements, adds a floating SR button + settings flyout, and
  * runs the in-page WebGPU engine (webgpu-sr.js). Smoothness is the priority:
@@ -19,15 +19,32 @@ const START_NEURAL = 216;   // conservative start so first frames never stall
 
 // GPU-load presets → fraction of the video's frame interval the net may use.
 // Lower = smoother/lighter; 'max' removes the cap (native res, high GPU).
-const PERF_BUDGET = { light: 0.55, balanced: 0.85, max: 100 };
-// Model intensity → ceiling on internal resolution as a fraction of native.
-const QUALITY_FRAC = { fast: 0.5, medium: 0.7, quality: 1.0 };
+// ── Power ───────────────────────────────────────────────────────
+// One control, three genuinely different behaviours.
+//
+// This replaces the old GPU-load + Quality pair. Those were built on a
+// mechanism that shrank the neural input below the source resolution to buy
+// frame time -- which cannot help, because reconstructing detail we just threw
+// away is worse than not running. Once that was removed the two controls had
+// nothing left to do: every option behaved identically on typical web video.
+//
+//   cap       ceiling on neural input height. Only bites on video taller than
+//             it; the input is never below the source either way.
+//   giveUpAt  multiple of the frame interval at which we stop enhancing and
+//             pass the original through. Lower = protects smoothness sooner.
+const POWER = {
+  auto:    { cap: NEURAL_CAP, giveUpAt: 1.25 },   // the default
+  battery: { cap: 720,        giveUpAt: 1.05 },   // fans and drain down
+  max:     { cap: NEURAL_CAP, giveUpAt: Infinity },// quality over smoothness
+};
+const powerOf = () => POWER[settings.power] || POWER.auto;
+
 
 let settings = {
-  enabled: false, perfMode: 'max', quality: 'quality',
+  enabled: false, power: 'auto',
   targetScale: 2, autoPause: true, rememberState: true, showStats: true,
   onlyFullscreen: false, blockedSites: [], sharpness: 1.4, sharpnessCustom: false,
-  autoEngage: true, showCompare: false,
+  autoEngage: true, showCompare: false, look: 'natural',
 };
 
 // Models: a fast 2× and a native 4×. Target scale >2 uses the 4× model for real
@@ -51,11 +68,11 @@ async function getEngine() {
       // Start on the fast 2× model; switched to 4× on demand by target scale.
       await e.loadWeights(MODEL_2X);
       engine = e;
-      console.log('[WebVSR] Engine ready');
+      console.log('[Crisp] Engine ready');
       return e;
     } catch (err) {
       engineError = err.message || String(err);
-      console.error('[WebVSR] Engine init failed:', err);
+      console.error('[Crisp] Engine init failed:', err);
       enginePromise = null;
       return null;
     }
@@ -71,8 +88,6 @@ class VideoOverlay {
     this.animId = null;
     this.frameTimes = [];
     this.lastMs = 0;
-    this.srH = START_NEURAL;
-    this.budgetMs = 30;
     this.cfgInW = 0; this.cfgInH = 0; this.cfgDispW = 0; this.cfgDispH = 0;
     this.lastMediaTime = -1;
     this._rvfcOn = false;
@@ -104,7 +119,6 @@ class VideoOverlay {
   onSourceChange() {
     this._srcW = 0; this._srcH = 0;
     this.cfgInW = 0; this.cfgInH = 0; this.cfgDispW = 0; this.cfgDispH = 0;
-    this.srH = START_NEURAL;
     this.lastMediaTime = -1;
     this.frameTimes = [];
     this.cantKeepUp = false;
@@ -132,14 +146,14 @@ class VideoOverlay {
     // SR toggle button.
     this.btn = el('button', btnStyle());
     this.btn.innerHTML = '<span style="font-size:10px;font-weight:800;pointer-events:none">SR</span>';
-    this.btn.title = 'Toggle WebVSR (Alt+S)';
+    this.btn.title = 'Toggle Crisp (Alt+S)';
     this.btn.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); this.toggle(); });
 
     // Gear (settings) + compare buttons. Compare is opt-in (settings.showCompare);
     // spacing is set so the buttons don't crowd the SR toggle.
     this.gearBtn = el('button', miniBtnStyle('58px'));
     this.gearBtn.innerHTML = gearSvg();
-    this.gearBtn.title = 'WebVSR settings';
+    this.gearBtn.title = 'Crisp settings';
     this.gearBtn.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); this.toggleFlyout(); });
 
     this.cmpBtn = el('button', miniBtnStyle('98px'));
@@ -202,15 +216,20 @@ class VideoOverlay {
     const label = (t) => el('div', { fontSize: '10px', textTransform: 'uppercase',
       letterSpacing: '0.09em', color: '#7a8494', margin: '12px 0 7px' }, t);
 
-    f.appendChild(label('GPU load'));
-    this.perfSeg = this.segment(['light', 'balanced', 'max'], ['Light', 'Balanced', 'Max'],
-      () => settings.perfMode, (v) => setSetting({ perfMode: v }));
-    f.appendChild(this.perfSeg.root);
+    f.appendChild(label('Power'));
+    this.powerSeg = this.segment(['auto', 'battery', 'max'], ['Auto', 'Battery', 'Max'],
+      () => settings.power || 'auto', (v) => setSetting({ power: v }));
+    f.appendChild(this.powerSeg.root);
 
-    f.appendChild(label('Quality'));
-    this.qualSeg = this.segment(['fast', 'medium', 'quality'], ['Fast', 'Medium', 'Quality'],
-      () => settings.quality, (v) => setSetting({ quality: v }));
-    f.appendChild(this.qualSeg.root);
+    f.appendChild(label('Look'));
+    // A grade on top of the reconstruction, not part of it. 'Natural' is exactly
+    // zero adjustment and stays the default, so the look never gets confused
+    // with what the network actually recovers.
+    this.lookSeg = this.segment(
+      ['natural', 'bright', 'vivid', 'cinematic'],
+      ['Natural', 'Bright', 'Vivid', 'Cinema'],
+      () => settings.look || 'natural', (v) => setSetting({ look: v }));
+    f.appendChild(this.lookSeg.root);
 
     const hint = el('div', { marginTop: '10px', fontSize: '10px', color: '#6b7280', lineHeight: '1.5' },
       'More options in the extension popup.');
@@ -259,7 +278,7 @@ class VideoOverlay {
   toggleFlyout() {
     const show = this.flyout.style.display === 'none';
     this.flyout.style.display = show ? 'block' : 'none';
-    if (show) { this.perfSeg.refresh(); this.qualSeg.refresh(); }
+    if (show) { this.powerSeg.refresh(); this.lookSeg.refresh(); }
     this.showChrome();
   }
 
@@ -328,7 +347,7 @@ class VideoOverlay {
     if (!e) { this.fail(engineError || 'WebGPU init failed'); return; }
 
     this.cfgInW = 0; this.cfgInH = 0; this.cfgDispW = 0; this.cfgDispH = 0;
-    this.srH = START_NEURAL; this.frameTimes = [];
+    this.frameTimes = [];
     this._srcW = 0; this._srcH = 0; this._needsFirstFrame = true;
     this.outCanvas.style.display = 'none';   // the loop reveals it after the first frame
     if (settings.showStats) this.statsEl.textContent = 'Processing…';
@@ -418,7 +437,7 @@ class VideoOverlay {
     else if (!hide && this.outCanvas.style.display === 'none') this.outCanvas.style.display = '';
     if (this.notWorthIt && settings.showStats) {
       this.statsEl.innerHTML =
-        '<span style="color:#2b3242;font-weight:700">WebVSR</span> <span style="color:#7a8494">idle</span>\n' +
+        '<span style="color:#2b3242;font-weight:700">Crisp</span> <span style="color:#7a8494">idle</span>\n' +
         'already about as sharp as\nyour screen, nothing to fix here';
     }
 
@@ -444,7 +463,6 @@ class VideoOverlay {
     // we upscale from the video's *current* native size, not a stale one.
     if (vw !== this._srcW || vh !== this._srcH) {
       this._srcW = vw; this._srcH = vh;
-      this.srH = START_NEURAL;
       this.cfgInW = 0; this.cfgInH = 0;
       this.frameTimes = [];
       this.cantKeepUp = false;
@@ -472,11 +490,18 @@ class VideoOverlay {
     const t0 = performance.now();
     try {
       const frameInt = this._frameInterval || 33;
-      this.budgetMs = frameInt * (PERF_BUDGET[settings.perfMode] ?? 0.85);
-      const ceilH = Math.min(NEURAL_CAP, vh, Math.round(vh * (QUALITY_FRAC[settings.quality] ?? 1)));
+      // Never feed the network fewer pixels than the source has. Anything below
+      // `srcH` is reconstructing detail we destroyed ourselves, so it is worse
+      // than passthrough by construction; when the budget cannot be met at this
+      // height the governor gives up and passes the original through instead.
+      const srcH = Math.min(NEURAL_CAP, vh);
+      const ceilH = Math.min(srcH, powerOf().cap);
+      this._floorH = ceilH;
 
-      let nH = Math.min(Math.round(this.srH / NEURAL_STEP) * NEURAL_STEP, ceilH);
-      nH = Math.max(MIN_NEURAL, nH) & ~1;
+      // Floor and ceiling are now the same value, so the neural input is simply
+      // the source height (capped). The governor no longer trades resolution for
+      // frame time -- it only decides whether to run at all, via cantKeepUp.
+      const nH = Math.max(MIN_NEURAL, ceilH) & ~1;
       let nW = Math.round(vw * nH / vh) & ~1;
 
       const scale = settings.targetScale || 2;
@@ -489,9 +514,10 @@ class VideoOverlay {
         this.cfgInW = nW; this.cfgInH = nH; this.cfgDispW = dW; this.cfgDispH = dH;
       }
       engine.sharpen = settings.sharpness || 0;
+      if (engine.setLook) engine.setLook(settings.look || 'natural');
       engine.render(this.video);
     } catch (err) {
-      console.error('[WebVSR] Frame error:', err);
+      console.error('[Crisp] Frame error:', err);
       this.fail(err.message);
       this.processing = false;
       return;
@@ -511,7 +537,6 @@ class VideoOverlay {
   }
 
   // Governor: keep the wall-clock frame time near the budget (a fraction of the
-  // video's frame interval). cost ∝ pixels², so target srH·√(budget/measured);
   // damped, with a deadband. If pinned at min res and still can't match the
   // source framerate, mark cantKeepUp → the loop passes the original through
   // (never show choppy SR over smooth video).
@@ -522,24 +547,12 @@ class VideoOverlay {
     const med = s[s.length >> 1] || dt;
     const frameInt = this._frameInterval || 33;
 
-    if (settings.perfMode === 'max') {           // no cap: climb to the ceiling
-      this.srH = Math.min(this._ceilH, this.srH + (this._ceilH - this.srH) * 0.5);
-      // 'max' lifts the *resolution* cap, not the promise that SR never makes
-      // playback worse. At the ceiling there is no lower internal res left to
-      // drop to, so passthrough is the only remedy there is -- keep it armed.
-      if (med > frameInt * 1.25) this.cantKeepUp = true;
-      else if (med < frameInt * 0.95) this.cantKeepUp = false;
-      return;
-    }
-    const ratio = med / this.budgetMs;
-    if (ratio > 1.05 || ratio < 0.9) {
-      let target = this.srH * Math.sqrt(this.budgetMs / med);
-      target = Math.max(MIN_NEURAL, Math.min(this._ceilH, target));
-      this.srH += (target - this.srH) * 0.5;
-    }
-    // Passthrough safety net (hysteresis): can't hit source fps even at min res.
-    const atMin = Math.round(this.srH / NEURAL_STEP) * NEURAL_STEP <= MIN_NEURAL;
-    if (atMin && med > frameInt * 1.25) this.cantKeepUp = true;
+    // The governor no longer trades resolution for frame time -- the input is
+    // pinned to the source, so there is nothing to trade. Its only job now is
+    // deciding whether enhancing is affordable at all, with hysteresis so it
+    // does not flap on the boundary.
+    const limit = powerOf().giveUpAt;
+    if (med > frameInt * limit) this.cantKeepUp = true;
     else if (med < frameInt * 0.95) this.cantKeepUp = false;
   }
 
@@ -548,7 +561,7 @@ class VideoOverlay {
     const gpu = Math.round(this.lastGpuMs || this.lastMs);
     if (this.cantKeepUp) {
       this.statsEl.innerHTML =
-        '<span style="color:#2b3242;font-weight:700">WebVSR</span> ' +
+        '<span style="color:#2b3242;font-weight:700">Crisp</span> ' +
         '<span style="color:#c07d2a">passthrough</span>\n' +
         'too much to keep up with here,\nshowing the original instead';
       return;
@@ -559,10 +572,10 @@ class VideoOverlay {
     const nat = this._nH >= this.video.videoHeight ? ' native' : '';
     const shp = (settings.sharpness || 0) > 0.01 ? ' · sharp' : '';
     this.statsEl.innerHTML =
-      '<span style="color:#2b3242;font-weight:700">WebVSR</span> ' + settings.perfMode +
+      '<span style="color:#2b3242;font-weight:700">Crisp</span> ' + (settings.power || 'auto') +
       ' <span style="color:#6b7280">' + fps + 'fps' + shp + '</span>\n' +
       'SR ' + this._nW + '×' + this._nH + nat + ' → ' + this._dW + '×' + this._dH + '\n' +
-      gpu + 'ms gpu · ' + Math.round(this.budgetMs) + 'ms budget';
+      gpu + 'ms gpu · ' + Math.round(this._frameInterval || 33) + 'ms/frame';
   }
 
   applySettings() {
@@ -570,7 +583,7 @@ class VideoOverlay {
     else if (this.active) this.statsEl.style.display = 'block';
     this.gateControls();
     this.showChrome();
-    if (this.flyout.style.display !== 'none') { this.perfSeg.refresh(); this.qualSeg.refresh(); }
+    if (this.flyout.style.display !== 'none') { this.powerSeg.refresh(); this.lookSeg.refresh(); }
   }
 
   destroy() {
@@ -685,7 +698,7 @@ document.addEventListener('keydown', (e) => {
 
 function init() {
   if ((settings.blockedSites || []).includes(location.hostname)) {
-    console.log('[WebVSR] disabled on', location.hostname);
+    console.log('[Crisp] disabled on', location.hostname);
     return;
   }
   if (document.body) { mo.observe(document.body, { childList: true, subtree: true }); scan(); }
@@ -699,4 +712,4 @@ chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (s) => {
 });
 setInterval(scan, 2000);
 
-console.log('[WebVSR] Content script loaded');
+console.log('[Crisp] Content script loaded');

@@ -187,31 +187,33 @@
 <body>
  <div class="app">
   <div class="header">
-    <img class="logo" src="icons/icon48.png" alt="WebVSR logo">
+    <img class="logo" src="icons/icon48.png" alt="Crisp logo">
     <div>
-      <div class="title">Web<span>VSR</span></div>
-      <div class="sub">Makes low-quality video clearer</div>
+      <div class="title">Crisp</div>
+      <div class="sub">Sharpens blurry video as it plays</div>
     </div>
   </div>
 
   <div class="section">
-    <div class="label"><span>GPU load</span><span class="hint">smoothness first</span></div>
-    <div class="seg" id="perf">
-      <button data-v="light">Light</button>
-      <button data-v="balanced">Balanced</button>
+    <div class="label"><span>Power</span><span class="hint">how hard it works</span></div>
+    <div class="seg" id="power">
+      <button data-v="auto">Auto</button>
+      <button data-v="battery">Battery</button>
       <button data-v="max">Max</button>
     </div>
-    <div class="hint" id="perfHint"></div>
+    <div class="hint" id="powerHint"></div>
+  </div>
   </div>
 
   <div class="section">
-    <div class="label">Quality (model intensity)</div>
-    <div class="seg" id="quality">
-      <button data-v="fast">Fast</button>
-      <button data-v="medium">Medium</button>
-      <button data-v="quality">Quality</button>
+    <div class="label"><span>Look</span><span class="hint">colour &amp; tone</span></div>
+    <div class="seg" id="look">
+      <button data-v="natural">Natural</button>
+      <button data-v="bright">Bright</button>
+      <button data-v="vivid">Vivid</button>
+      <button data-v="cinematic">Cinema</button>
     </div>
-    <div class="hint" id="qualHint"></div>
+    <div class="hint" id="lookHint"></div>
   </div>
 
   <div class="section">

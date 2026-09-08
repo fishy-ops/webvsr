@@ -1,5 +1,5 @@
 /**
- * WebVSR - in-page WebGPU super-resolution engine.
+ * Crisp - in-page WebGPU super-resolution engine.
  *
  * Runs SPAN-Lite (fused, 2x) entirely as WGSL compute shaders. No ONNX
  * Runtime, no WASM, no message passing: the video frame is pulled straight
@@ -128,12 +128,13 @@ class WebGPUSR {
     this.C = 32;        // feature channels (from the model manifest; 32 by default)
     this.scale = 2;     // upscale factor (from the model manifest; 2 by default)
     this.sharpen = 0;   // 0..1 contrast-adaptive sharpen strength (0 = off)
+    this.look = 'natural';   // see LOOKS; 'natural' applies no grade
   }
 
   async init() {
-    if (!navigator.gpu) { console.warn('[WebVSR] WebGPU unavailable'); return false; }
+    if (!navigator.gpu) { console.warn('[Crisp] WebGPU unavailable'); return false; }
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (!adapter) { console.warn('[WebVSR] No WebGPU adapter'); return false; }
+    if (!adapter) { console.warn('[Crisp] No WebGPU adapter'); return false; }
     this.hasTS = adapter.features.has('timestamp-query');
     // f16 wherever the GPU supports it, with an automatic f32 fallback where it
     // does not. 1.38x on Apple silicon, no measurable quality cost anywhere
@@ -144,9 +145,9 @@ class WebGPUSR {
     if (this.hasTS) feats.push('timestamp-query');
     if (this.f16) feats.push('shader-f16');
     this.device = await adapter.requestDevice({ requiredFeatures: feats });
-    console.log('[WebVSR] precision:', this.f16 ? 'f16' : 'f32');
+    console.log('[Crisp] precision:', this.f16 ? 'f16' : 'f32');
     this.device.lost.then((info) => {
-      console.error('[WebVSR] GPU device lost:', info.message);
+      console.error('[Crisp] GPU device lost:', info.message);
       this.ready = false;
     });
     this.sampler = this.device.createSampler({
@@ -272,7 +273,7 @@ class WebGPUSR {
       this.w.cat_bias = { weight: upload(bF), bias: null };
     }
     if (off !== all.length) {
-      console.warn(`[WebVSR] weight size mismatch: read ${off} of ${all.length}`);
+      console.warn(`[Crisp] weight size mismatch: read ${off} of ${all.length}`);
     }
     this.ready = true;
     return true;
@@ -333,7 +334,8 @@ class WebGPUSR {
     this.sharpTex?.destroy?.();
     this.sharpTex = d.createTexture({ size: [dispW, dispH], format: 'rgba8unorm', usage: TEX });
     if (!this.sharpParams) {
-      this.sharpParams = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      // 32 bytes: 4 x u32 (dims, sharpen strength) then 4 x f32 (look grade)
+      this.sharpParams = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     }
 
     this.ctx = canvas.getContext('webgpu');
@@ -579,6 +581,26 @@ class WebGPUSR {
   }
 
   // ── Run one frame: video -> canvas ──────────────────────────────
+
+  /** Uniform block for the sharpen+grade pass: 4 x u32 then 4 x f32. */
+  _sharpenUniform() {
+    const buf = new ArrayBuffer(32);
+    new Uint32Array(buf, 0, 4).set([this.dispW, this.dispH,
+                                    Math.round(this.sharpen * 4096), 0]);
+    const g = LOOKS[this.look] || LOOKS.natural;
+    new Float32Array(buf, 16, 4).set([g.exposure, g.contrast, g.saturation, g.temp]);
+    return buf;
+  }
+
+  /** Pick a look. Unknown names fall back to 'natural' rather than throwing,
+   *  so a stale setting from an older version cannot break playback. */
+  setLook(name) {
+    this.look = LOOKS[name] ? name : 'natural';
+    return this.look;
+  }
+
+  static looks() { return LOOK_NAMES.slice(); }
+
   render(video) {
     if (!this.ready || !this.ctx) return;
     const d = this.device;
@@ -639,11 +661,14 @@ class WebGPUSR {
       fin.end();
     }
 
-    // Optional contrast-adaptive sharpen, then present to the canvas.
+    // Optional contrast-adaptive sharpen + look grade, then present to canvas.
+    // The grade rides in this pass, so the pass has to run when a look is set
+    // even at zero sharpening -- otherwise picking a look with the sharpness
+    // slider at 0 would silently do nothing.
     const canvasTex = this.ctx.getCurrentTexture();
-    if (this.sharpen > 0.001) {
+    if (this.sharpen > 0.001 || this.look !== 'natural') {
       d.queue.writeBuffer(this.sharpParams, 0,
-        new Uint32Array([this.dispW, this.dispH, Math.round(this.sharpen * 4096), 0]));
+        this._sharpenUniform());
       const sp = enc.beginComputePass();
       sp.setPipeline(this.pipe.sharpen);
       sp.setBindGroup(0, this.sharpenBG);
@@ -1021,12 +1046,30 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   textureStore(dst, vec2u(gid.x, gid.y), vec4f(clamp(col, vec3(0.0), vec3(1.0)), 1.0));
 }`;
 
+// ── Look presets ────────────────────────────────────────────────
+// A grade applied in the SAME pass as the sharpen, not a separate dispatch:
+// this engine is memory-bandwidth bound (~6 GB of intermediate traffic per 1080p
+// frame), so an extra full-frame read/write would cost far more than the dozen
+// ALU ops the grade actually needs. Free, in practice.
+//
+// Reconstruction is what the network does; the grade is a preference on top of
+// it, so "natural" is exactly zero and stays the default. Nothing here invents
+// detail -- it only moves tone and colour.
+const LOOKS = {
+  natural:   { exposure: 0.00, contrast: 0.00, saturation: 0.00, temp: 0.00 },
+  bright:    { exposure: 0.07, contrast: 0.10, saturation: 0.12, temp: 0.02 },
+  vivid:     { exposure: 0.02, contrast: 0.18, saturation: 0.30, temp: 0.00 },
+  cinematic: { exposure: -0.02, contrast: 0.24, saturation: -0.05, temp: -0.05 },
+};
+const LOOK_NAMES = Object.keys(LOOKS);
+
 // Contrast-adaptive sharpen (FSR RCAS spirit): unsharp with a 5-tap cross,
 // clamped to the local min/max so it boosts edge contrast without ringing/halos.
 const SHADER_SHARPEN = /* wgsl */`
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var dst: texture_storage_2d<rgba8unorm, write>;
-struct P { W: u32, H: u32, strq: u32, pad: u32 };
+struct P { W: u32, H: u32, strq: u32, pad: u32,
+           exposure: f32, contrast: f32, saturation: f32, temp: f32 };
 @group(0) @binding(2) var<uniform> p: P;
 
 @compute @workgroup_size(16, 16, 1)
@@ -1043,7 +1086,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let sharp = c + strength * (4.0 * c - l - r - t - b);
   let mn = min(c, min(min(l, r), min(t, b)));
   let mx = max(c, max(max(l, r), max(t, b)));
-  let outc = clamp(sharp, mn, mx);   // no overshoot beyond local neighborhood
+  var outc = clamp(sharp, mn, mx);   // no overshoot beyond local neighborhood
+
+  // ── look grade ────────────────────────────────────────────────
+  // Ordered exposure -> contrast -> saturation -> temperature, which is the
+  // order a colourist works in and the order that keeps each control's effect
+  // predictable when they are combined.
+  outc = outc * (1.0 + p.exposure);
+  // Soft S-curve rather than a gain around 0.5: smoothstep cannot push a value
+  // outside 0..1, so contrast never clips highlights to flat white.
+  outc = mix(outc, smoothstep(vec3f(0.0), vec3f(1.0), outc), p.contrast);
+  let luma = dot(outc, vec3f(0.2126, 0.7152, 0.0722));
+  outc = mix(vec3f(luma), outc, 1.0 + p.saturation);
+  outc = outc + vec3f(p.temp, 0.0, -p.temp);
+  outc = clamp(outc, vec3f(0.0), vec3f(1.0));
+
   textureStore(dst, vec2u(gid.x, gid.y), vec4f(outc, 1.0));
 }`;
 
