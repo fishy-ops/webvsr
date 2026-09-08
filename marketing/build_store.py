@@ -28,6 +28,17 @@ OUT = Path("assets/screenshots")
 SETS = {}
 
 
+def load_plain(stem, frame=120):
+    """Ungraded, unsharpened set — used only for choosing crops."""
+    k = stem + "_plain"
+    if k not in SETS:
+        c = Path(f"src/_plain_{stem}.pt")
+        SETS[k] = (torch.load(c, weights_only=False) if c.exists()
+                   else make_set(f"src/{stem}.mp4", frame, sharpen=0, look="natural"))
+        torch.save(SETS[k], c)
+    return SETS[k]
+
+
 def load(stem, frame=120):
     if stem not in SETS:
         c = Path(f"src/_set_{stem}.pt")
@@ -72,17 +83,36 @@ def pair(s, region, scale, headline, out):
 
 
 def breadth(cells, out):
+    """Four clips, each cropped where the model MEASURABLY helps.
+
+    The crop is chosen by find_crops.score_windows, not by hand. An earlier
+    revision replaced those scored windows with hardcoded coordinates and the
+    cells got visibly worse -- the scorer is picking regions where the model
+    closes real error against the original, which is exactly what the cell is
+    supposed to show.
+
+    Scoring runs on an ungraded set: with the Vivid look applied, "after"
+    differs from the original by the grade as well as the reconstruction, which
+    would corrupt the ranking. Crops are found clean, then rendered graded.
+    """
+    from find_crops import score_windows
     im = Image.new("RGB", (W, H), GROUND)
     d = ImageDraw.Draw(im)
     lockup(im, d)
     d.text((PAD, 82), "The same network, four kinds of video.", font=font(30, 680), fill=INK)
     cw, ch = (W - 2 * PAD - 22) // 2, 306
     pw = (cw - 8) // 2
-    for i, (stem, label, frame, reg) in enumerate(cells):
+    for i, (stem, label, frame) in enumerate(cells):
         cx = PAD + (i % 2) * (cw + 22)
         cy = 140 + (i // 2) * (ch + 26)
+        plain = load_plain(stem, frame)
+        ranked = score_windows(plain, crop=180, stride=60)
+        if not ranked:
+            print(f"  !! no textured window in {stem}"); continue
+        _, _, y, x = ranked[0]
+        rh = 180
+        rw = int(rh * pw / 238)
         s = load(stem, frame)
-        x, y, rw, rh = reg
         for j, key in enumerate(("before", "after")):
             crop = to_pil(s[key][:, :, y:y + rh, x:x + rw]).resize((pw, 238), Image.LANCZOS)
             px = cx + j * (pw + 8)
@@ -90,6 +120,7 @@ def breadth(cells, out):
             d.rectangle([px, cy + 26, px + pw, cy + 264], outline=LINE, width=1)
             d.rectangle([px, cy + 264, px + pw, cy + 269], fill=GREEN if j else DULL)
         d.text((cx, cy), label, font=font(17, 660), fill=INK)
+        print(f"  {stem:26} scored crop ({x},{y})")
     im.save(OUT / out); print("wrote", out)
 
 
