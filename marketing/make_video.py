@@ -28,10 +28,10 @@ from looks import grade
 
 # (clip, crop-x, crop-y) -- each window is 100% pixels, chosen to hold detail
 SCENES = [
-    ("src/anime_bbb.mp4",                340, 200),
     ("src/tractor_1080p25.mp4",          420, 260),
-    ("src/anime_sintel.mp4",             340, 180),
     ("src/pedestrian_area_1080p25.mp4",  380, 200),
+    ("src/factory_1080p30.mp4",          260, 180),
+    ("src/speed_bag_1080p.mp4",          300, 240),
 ]
 CW, CH = 1280, 720
 FPS = 25
