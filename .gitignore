@@ -25,3 +25,12 @@ Thumbs.db
 # Local scratch: editor backups and generated drafts
 *.bak*
 *.gen
+
+# marketing source material: large video and model binaries stay out of git
+marketing/*.mp4
+marketing/*.pth
+assets/raw/
+assets/crops/
+assets/slider/
+assets/*.mp4
+.claude/
