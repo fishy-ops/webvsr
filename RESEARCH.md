@@ -1827,6 +1827,61 @@ in this codebase is currently **zero for five**.
 
 ---
 
+## 34. Deleting the fidelity phase beat everything
+
+The user reframed the goal: the model should LOOK good, not reproduce the source
+accurately. That turned out to be worth more than any technique imported so far.
+
+Measured loss composition once phase 2 begins:
+
+    total 0.3729  =  charbonnier 0.0214 (5.7%)  +  perceptual 0.3513 (94%)
+
+The perceptual term already dominates phase 2. But **phase 1 is 25 of the 40
+epochs, and carries no perceptual term at all** — Charbonnier + FFT only. It is
+not a warmup for the objective; it is training against a different one, dragging
+the model toward the blurry conditional mean before anything perceptual gets a
+say. `perc` deletes it: `--phase1-epochs 0`, so every epoch is perceptual.
+
+19 real-camera clips, CRF 28, paired:
+
+| model | cam DISTS | wins | ΔDISTS vs perc | t | render DISTS | \|tLP\| vs bic |
+|---|---|---|---|---|---|---|
+| **perc** | **+7.1%** | **19/19** | — | — | +14.8% | −0.00009 |
+| ctrl | +6.2% | 18/19 | +0.00133 | +3.19 | +12.9% | −0.00002 |
+| ctrl2 | +6.1% | 18/19 | +0.00158 | +4.14 | +12.8% | −0.00020 |
+| shipped | +5.8% | 18/19 | +0.00201 | +5.36 | +13.3% | −0.00002 |
+| fdlperc | +5.8% | 16/19 | −0.00054 | −0.19 | **+23.8%** | **−0.00248** |
+
+`perc` beats the shipped model at **t = 5.36 on 18 of 19 clips**, and wins on
+**19/19** against bicubic — the first model here to do that. It also beats
+`ctrl`, which was the previous best, at t = 3.19. Shipped +5.8% → +7.1% is a 22%
+relative gain in the margin over bicubic, from deleting training, not adding it.
+
+`ctrl2` is the useful null: 40 more epochs of the standard recipe on top of
+`ctrl` moved nothing (+6.2% → +6.1%). So §33's "the model was undertrained"
+reading was wrong. It was not undertrained — it was trained on the wrong
+objective for 62% of its epochs.
+
+**fdlperc is a different model, not a worse one.** On camera clips it ties
+`perc` (t = −0.19, and 13 of 19 clips actually favour it). But its render DISTS
+is **+23.8% against perc's +14.8%**, and its |tLP| deviation is −0.00248 against
+−0.00009 — roughly 25x better temporal behaviour. FDL remains the only technique
+in nine attempts that produces a genuinely different trade rather than a worse
+model, and it is clearly the better choice for animation and for flicker.
+
+### What a pretrained model says about the ceiling
+
+`realesr-animevideov3` (Real-ESRGAN, BSD-3), a GAN-trained model purpose-built
+for anime video: **621,424 params, 19x ours**, and **105 ms/frame** for 540p→4x
+on a 2070S in CUDA — 3.2x over a 30fps budget, before WebGPU's overhead. Not
+shippable. But its shape is a plain conv stack plus one pixel-shuffle, which is
+exactly what the WGSL pipeline already runs: the gap is depth and width, not
+architecture. That leaves an untested middle ground around 100–200k params.
+
+Transformers are ruled out on arithmetic, not preference. SwinIR-lightweight is
+~910k params (27x ours) and needs window shifting, channel LayerNorm and softmax
+attention — all slow and awkward in WGSL, on an engine already bandwidth-bound.
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
