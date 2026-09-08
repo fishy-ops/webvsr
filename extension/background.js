@@ -17,11 +17,11 @@ const DEFAULT_SETTINGS = {
   showStats: true,       // show the on-video stats HUD
   onlyFullscreen: false, // only run SR while the video is fullscreen
   blockedSites: [],      // hostnames where Crisp stays off entirely
-  sharpness: 1.4,        // contrast-adaptive sharpen strength (0=off … 1.4=high, or custom)
+  sharpness: 3.5,        // contrast-adaptive sharpen strength (0=off … 3.5=high, or custom)
   sharpnessCustom: false,// true = user is on the custom slider (sharpness can exceed High)
   autoEngage: true,      // only run SR when the source is clearly lower-res than the display
   showCompare: false,    // show the on-video hold-to-compare button (opt-in)
-  look: 'natural',       // colour/tone grade on top of the upscale.
+  look: 'vivid',       // colour/tone grade on top of the upscale.
                          // 'natural' is exactly zero adjustment, so the
                          // default output is only what the model recovered.
 };
@@ -33,11 +33,20 @@ let SETTINGS = { ...DEFAULT_SETTINGS };
 // 'battery'; everyone else gets 'auto'. Without this they would silently keep
 // two dead keys and lose the intent they had expressed.
 function migrate(st) {
-  if (st.power) return st;
-  const wasLight = st.perfMode === 'light' || st.quality === 'fast';
-  st.power = wasLight ? 'battery' : 'auto';
-  delete st.perfMode;
-  delete st.quality;
+  // GPU load + Quality -> Power. Anyone who had deliberately turned the load
+  // down wanted less heat, so they land on 'battery'; everyone else on 'auto'.
+  if (!st.power) {
+    const wasLight = st.perfMode === 'light' || st.quality === 'fast';
+    st.power = wasLight ? 'battery' : 'auto';
+    delete st.perfMode;
+    delete st.quality;
+  }
+  // Punchier defaults (sharpness 3.5, Vivid). Only move installs that are still
+  // sitting on the OLD defaults exactly -- those values were never chosen, they
+  // were just what shipped. Anyone who picked their own sharpness or look keeps
+  // it, because overriding a deliberate choice on update is not ours to make.
+  if (st.sharpness === 1.4 && !st.sharpnessCustom) st.sharpness = 3.5;
+  if (!st.look || st.look === 'natural') st.look = 'vivid';
   return st;
 }
 

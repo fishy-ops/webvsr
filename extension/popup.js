@@ -1,7 +1,7 @@
 let settings = {
   power: 'auto', targetScale: 2,
-  autoPause: true, rememberState: true, showStats: true, sharpness: 1.4,
-  look: 'natural',
+  autoPause: true, rememberState: true, showStats: true, sharpness: 3.5,
+  look: 'vivid',
 };
 
 const POWER_HINT = {

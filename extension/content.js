@@ -43,8 +43,8 @@ const powerOf = () => POWER[settings.power] || POWER.auto;
 let settings = {
   enabled: false, power: 'auto',
   targetScale: 2, autoPause: true, rememberState: true, showStats: true,
-  onlyFullscreen: false, blockedSites: [], sharpness: 1.4, sharpnessCustom: false,
-  autoEngage: true, showCompare: false, look: 'natural',
+  onlyFullscreen: false, blockedSites: [], sharpness: 3.5, sharpnessCustom: false,
+  autoEngage: true, showCompare: false, look: 'vivid',
 };
 
 // Models: a fast 2× and a native 4×. Target scale >2 uses the 4× model for real
