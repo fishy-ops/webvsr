@@ -34,3 +34,6 @@ assets/crops/
 assets/slider/
 assets/*.mp4
 .claude/
+
+# local working context — never commit
+CONTEXT.md
