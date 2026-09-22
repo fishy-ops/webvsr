@@ -86,6 +86,22 @@ const FOLD_CONV_LAST = (typeof globalThis !== "undefined"
                        ? !!globalThis.__WEBVSR_FORCE_FOLD_LAST
                        : false;
 
+// Vectorised weights for the 3x3 convs: re-laid out at load time as
+// [ic][tap][oc] vec4s so each tap reads two vec4 weights instead of eight
+// scalars, and the 32 accumulators are eight vec4s. Same arithmetic in the
+// same order. (Idea from websr's Anime4K layers, which keep weights as mat4x4.)
+const VEC4_WEIGHTS = (typeof globalThis !== "undefined"
+                      && globalThis.__WEBVSR_VEC4 !== undefined)
+                     ? !!globalThis.__WEBVSR_VEC4
+                     : true;
+
+// Accumulate the 3x3 convs in f16 wherever storage is already f16. 13-16%
+// faster on an M4 Pro on top of VEC4_WEIGHTS. Not bit-identical: measured on
+// the RESEARCH.md 10 real-video set against ground truth, PSNR moved +0.009 dB
+// (2x) and +0.0003 dB (lite), no clip worse, worst pixel 5/255 (RESEARCH.md 37).
+const F16_ACC = (typeof globalThis !== "undefined" && globalThis.__WEBVSR_F16ACC !== undefined)
+                ? !!globalThis.__WEBVSR_F16ACC : true;
+
 const FUSE_ATTN = (typeof globalThis !== "undefined"
                    && globalThis.__WEBVSR_FORCE_FUSE_ATTN !== undefined)
                   ? !!globalThis.__WEBVSR_FORCE_FUSE_ATTN
@@ -230,6 +246,25 @@ class WebGPUSR {
       this.device.queue.writeBuffer(bBuf, 0, toBytes(all.subarray(off, off + bLen)));
       off += bLen;
       this.w[name] = { weight: wBuf, bias: bBuf };
+      if (VEC4_WEIGHTS && k === 3) {
+        // [oc][ic][tap] -> [ic][tap][OCp], OCp = outC padded to the kernel's
+        // 8-channel group so every thread reads two whole vec4s per tap.
+        const OCp = Math.ceil(outC / 8) * 8;
+        const srcW = all.subarray(off - wLen - bLen, off - bLen);
+        const wv = new Float32Array(inC * 9 * OCp);
+        for (let oc = 0; oc < outC; oc++)
+          for (let ic = 0; ic < inC; ic++)
+            for (let t = 0; t < 9; t++) wv[(ic * 9 + t) * OCp + oc] = srcW[(oc * inC + ic) * 9 + t];
+        const bv = new Float32Array(OCp);
+        bv.set(all.subarray(off - bLen, off));
+        const up = (arr) => {
+          const b = this.device.createBuffer({ size: arr.length * FS, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+          this.device.queue.writeBuffer(b, 0, toBytes(arr));
+          return b;
+        };
+        this.w[name].weightV = up(wv);
+        this.w[name].biasV = up(bv);
+      }
       if (name === "conv_cat" || name === "conv_last") {
         // Keep CPU copies: the fold needs the numbers, not the GPU buffers.
         cpu[name] = {
@@ -298,8 +333,9 @@ class WebGPUSR {
     const T = this.f16 ? 'f16' : 'f32';
     const EN = this.f16 ? 'enable f16;\n' : '';
     this.pipe.pre = mk(EN + buildPre(T));
-    this.pipe.conv = mk(EN + buildConv(T));
-    if (FUSE_ATTN) this.pipe.convattn = mk(EN + buildConv(T, true));
+    const conv = VEC4_WEIGHTS ? buildConvV4 : buildConv;
+    this.pipe.conv = mk(EN + conv(T));
+    if (FUSE_ATTN) this.pipe.convattn = mk(EN + conv(T, true));
     this.pipe.attn = mk(EN + buildAttn(T));
     this.pipe.cat = mk(EN + buildCat(T, this.C));
     if (FOLD_CONV_LAST) this.pipe.catfused = mk(EN + buildCatFused(T, this.C));
@@ -477,8 +513,8 @@ class WebGPUSR {
         layout: P.conv.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: inBuf } },
-          { binding: 1, resource: { buffer: W[name].weight } },
-          { binding: 2, resource: { buffer: W[name].bias } },
+          { binding: 1, resource: { buffer: W[name].weightV || W[name].weight } },
+          { binding: 2, resource: { buffer: W[name].biasV || W[name].bias } },
           { binding: 3, resource: { buffer: outBuf } },
           { binding: 4, resource: { buffer: params } },
         ],
@@ -497,8 +533,8 @@ class WebGPUSR {
         layout: P.convattn.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: inBuf } },
-          { binding: 1, resource: { buffer: W[name].weight } },
-          { binding: 2, resource: { buffer: W[name].bias } },
+          { binding: 1, resource: { buffer: W[name].weightV || W[name].weight } },
+          { binding: 2, resource: { buffer: W[name].biasV || W[name].bias } },
           { binding: 3, resource: { buffer: outBuf } },
           { binding: 4, resource: { buffer: params } },
           { binding: 5, resource: { buffer: xbBuf } },
@@ -950,6 +986,78 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     L.push(`    if (vx1) { outp[oc+by*W+bx+1u]=${T}(v1); }`);
     L.push(`    if (vy1) { outp[oc+(by+1u)*W+bx]=${T}(v2); }`);
     L.push(`    if (vx1 && vy1) { outp[oc+(by+1u)*W+bx+1u]=${T}(v3); }`);
+    }
+    L.push('  }');
+  }
+  L.push('}');
+  return L.join('\n');
+};
+
+// buildConv with vec4 weights and accumulators: a{pixel}l holds output
+// channels o..o+3, a{pixel}h holds o+4..o+7. The 4x4 input patch is loaded
+// exactly as in buildConv.
+const buildConvV4 = (T, fuseAttn = false) => {
+  const L = [];
+  const V = `vec4<${T}>`;
+  // f16 accumulators when storage is f16 and F16_ACC is on; else f32.
+  const hacc = F16_ACC && T === 'f16';
+  const A = hacc ? 'vec4<f16>' : 'vec4f', S = hacc ? 'f16' : 'f32';
+  L.push(`
+@group(0) @binding(0) var<storage, read> inp: array<${T}>;
+@group(0) @binding(1) var<storage, read> wgt: array<${V}>;
+@group(0) @binding(2) var<storage, read> bia: array<${V}>;
+@group(0) @binding(3) var<storage, read_write> outp: array<${T}>;
+struct P { W:u32, H:u32, inC:u32, outC:u32, act:u32, k:u32 };
+@group(0) @binding(4) var<uniform> pp: P;
+${fuseAttn ? `@group(0) @binding(5) var<storage, read> xb: array<${T}>;` : ''}
+fn silu(v: f32) -> f32 { return v / (1.0 + exp(-v)); }
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let bx = gid.x * 2u; let by = gid.y * 2u;
+  if (bx >= pp.W || by >= pp.H) { return; }
+  let W = pp.W; let H = pp.H; let IC = pp.inC; let OC = pp.outC; let px = W * H;
+  let o = gid.z * 8u; let og = gid.z * 2u; let OC4 = ((OC + 7u) / 8u) * 2u;
+  let vx1 = (bx + 1u) < W; let vy1 = (by + 1u) < H;
+  let bl = ${A}(bia[og]); let bh = ${A}(bia[og + 1u]);
+  var a0l = bl; var a0h = bh; var a1l = bl; var a1h = bh;
+  var a2l = bl; var a2h = bh; var a3l = bl; var a3h = bh;
+  for (var ic = 0u; ic < IC; ic++) {
+    let cb = ic * px;`);
+  for (let c = 0; c < 4; c++)
+    L.push(`    let cx${c}=i32(bx)+${c - 1}; let cok${c}=cx${c}>=0 && cx${c}<i32(W); let cc${c}=u32(clamp(cx${c},0,i32(W)-1));`);
+  for (let r = 0; r < 4; r++)
+    L.push(`    let ry${r}=i32(by)+${r - 1}; let rok${r}=ry${r}>=0 && ry${r}<i32(H); let rr${r}=cb+u32(clamp(ry${r},0,i32(H)-1))*W;`);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++)
+    L.push(`    let p${r}_${c}=select(${S}(0.0), ${S}(inp[rr${r}+cc${c}]), rok${r} && cok${c});`);
+  for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++) {
+    L.push(`    { let wb = (ic*9u + ${ky * 3 + kx}u) * OC4 + og; let wl = ${A}(wgt[wb]); let wh = ${A}(wgt[wb + 1u]);`);
+    const s = [`p${ky}_${kx}`, `p${ky}_${kx + 1}`, `p${ky + 1}_${kx}`, `p${ky + 1}_${kx + 1}`];
+    for (let q = 0; q < 4; q++) L.push(`      a${q}l += ${s[q]}*wl; a${q}h += ${s[q]}*wh;`);
+    L.push('    }');
+  }
+  L.push('  }');
+  L.push('  let doAct = pp.act == 1u;');
+  const comp = ['x', 'y', 'z', 'w'];
+  for (let k = 0; k < 8; k++) {
+    const half = k < 4 ? 'l' : 'h', c = comp[k % 4];
+    L.push(`  if (o+${k}u<OC) {`);
+    L.push(`    var v0=f32(a0${half}.${c}); var v1=f32(a1${half}.${c}); var v2=f32(a2${half}.${c}); var v3=f32(a3${half}.${c});`);
+    L.push('    if (doAct) { v0=silu(v0); v1=silu(v1); v2=silu(v2); v3=silu(v3); }');
+    L.push(`    let oc=(o+${k}u)*px;`);
+    if (fuseAttn) {
+      L.push('    let i0=oc+by*W+bx; let i1=i0+1u;');
+      L.push('    let i2=oc+(by+1u)*W+bx; let i3=i2+1u;');
+      for (let q = 0; q < 4; q++)
+        L.push(`    v${q}=(v${q}+f32(xb[i${q}]))*(1.0/(1.0+exp(-v${q}))-0.5);`);
+      L.push(`    outp[i0]=${T}(v0);`);
+      L.push(`    if (vx1) { outp[i1]=${T}(v1); }`);
+      L.push(`    if (vy1) { outp[i2]=${T}(v2); }`);
+      L.push(`    if (vx1 && vy1) { outp[i3]=${T}(v3); }`);
+    } else {
+      L.push(`    outp[oc+by*W+bx]=${T}(v0);`);
+      L.push(`    if (vx1) { outp[oc+by*W+bx+1u]=${T}(v1); }`);
+      L.push(`    if (vy1) { outp[oc+(by+1u)*W+bx]=${T}(v2); }`);
+      L.push(`    if (vx1 && vy1) { outp[oc+(by+1u)*W+bx+1u]=${T}(v3); }`);
     }
     L.push('  }');
   }

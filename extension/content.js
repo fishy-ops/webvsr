@@ -34,10 +34,14 @@ const START_NEURAL = 216;   // conservative start so first frames never stall
 //             measurement window, to stay on. Below it we step down a tier
 //             (full model -> lite model -> original). 0 = never step down.
 //   lite      start on the lite model instead of the full one.
+//   headroom  also step down when the GPU is busy for more than this share of
+//             each frame interval, even if every frame is still delivered: a
+//             model that *just* fits keeps the GPU pinned at ~100%, with no
+//             room left for the page, the compositor or anything else.
 const POWER = {
-  auto:    { cap: NEURAL_CAP, minRatio: 0.9,  lite: false },  // the default
-  battery: { cap: 720,        minRatio: 0.97, lite: true },   // fans and drain down
-  max:     { cap: NEURAL_CAP, minRatio: 0,    lite: false },  // quality over smoothness
+  auto:    { cap: NEURAL_CAP, minRatio: 0.9,  lite: false, headroom: 0.8 },  // the default
+  battery: { cap: 720,        minRatio: 0.97, lite: true,  headroom: 0.6 },  // fans and drain down
+  max:     { cap: NEURAL_CAP, minRatio: 0,    lite: false, headroom: Infinity }, // quality over smoothness
 };
 
 // Keep-up measurement. The old governor compared a median per-frame wall time
@@ -58,7 +62,7 @@ const FAIL_WINDOWS = 2;       // consecutive failing windows before giving up
 const TRIAL_FIRST_MS = 4000;  // first retry after giving up; doubles per failed trial
 const TRIAL_MAX_MS = 60000;
 const GAP_MS = 400;           // a gap this long between frames = pause/seek, restart the window
-const LITE_COST_RATIO = 3.3;  // full-model cost / lite-model cost, measured on an M4 Pro
+const LITE_COST_RATIO = 2.8;  // full-model cost / lite-model cost, measured on an M4 Pro (14 ms / 5 ms at 720p)
 const powerOf = () => POWER[settings.power] || POWER.auto;
 
 
@@ -188,6 +192,7 @@ class VideoOverlay {
   restartWindow(now = performance.now()) {
     this._winStart = now + WARMUP_MS;   // frames before this don't count
     this._winSrc = 0;                   // frames the video presented in the window
+    this._winGpu = 0; this._winGpuN = 0; // GPU-timestamp ms of SR frames in the window
     this._winSr = 0;                    // SR frames finished in the window
     this._lastPresented = null;
     this._lastCb = now;
@@ -596,7 +601,12 @@ class VideoOverlay {
     this.srcFps = this._winSrc * 1000 / span;
     this.lastRatio = ratio;
     const need = powerOf().minRatio;
-    const ok = ratio >= need;
+    // Headroom is judged on GPU timestamps only: wall-clock time includes the
+    // completion latency and would read as "busy" on an idle GPU.
+    const gpuAvg = this._winGpuN ? this._winGpu / this._winGpuN : 0;
+    this.gpuShare = gpuAvg && this.srcFps ? gpuAvg * this.srcFps / 1000 : 0;
+    const tooBusy = this.gpuShare > powerOf().headroom;
+    const ok = ratio >= need && !tooBusy;
 
     if (this.trialing) {
       this.trialing = false;
@@ -636,6 +646,7 @@ class VideoOverlay {
     }
     // Next window starts immediately; only a (re)configure needs a warm-up.
     this._winStart = now; this._winSrc = 0; this._winSr = 0;
+    this._winGpu = 0; this._winGpuN = 0;
     this.updateVisibility();
   }
 
@@ -730,7 +741,10 @@ class VideoOverlay {
       if (engine.error) { const msg = engine.error; engine.error = null; this.gpuError(msg); return; }
       this.lastMs = performance.now() - t0;
       this.lastGpuMs = engine.gpuMs || this.lastMs;
-      if (performance.now() >= this._winStart) this._winSr++;
+      if (performance.now() >= this._winStart) {
+        this._winSr++;
+        if (engine.hasTS && engine.gpuMs > 0) { this._winGpu += engine.gpuMs; this._winGpuN++; }
+      }
       this._needsFirstFrame = false;   // a valid frame is now on the canvas, safe to show
       this.updateVisibility();
       if (this._pending) {

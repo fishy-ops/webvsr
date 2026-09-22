@@ -2078,6 +2078,87 @@ renders and flicker. Here, on an anchored model, four gentle epochs of it gained
 on **all three** columns. The obvious experiment is `perc` + anchor + a short FDL
 tune, and a longer lite FDL tune now that four epochs are known to help.
 
+## 37. What websr's shaders taught the conv kernel, and GPU headroom
+
+Asked why Anime4K (via websr) runs faster than these models, and whether its
+code has anything to borrow. Measured on the M4 Pro, Chromium, f16.
+
+### It is faster because it computes less, not because it computes better
+
+| model | multiply-adds / input px | 720p | throughput |
+|---|---|---|---|
+| Anime4K S (websr) | 1,008 | 3.3 ms | ~0.3 TMAC/s |
+| Anime4K L (websr) | 8,544 | 11.9 ms | ~0.66 TMAC/s |
+| lite (this engine) | 8,956 | 5.8 ms | ~1.4 TMAC/s |
+| 2x (this engine) | 33,388 | 18.9 ms | ~1.6 TMAC/s |
+
+At nearly equal work (Anime4K L vs lite) this engine is about 2x faster. S and
+M are fast because they are 9x and 3.5x smaller networks.
+
+### Where this engine's time goes
+
+Removing parts of a 720p frame: the whole frame is 6.9 ms (lite) / 19.7 ms
+(2x); everything except the convs -- preprocess, shuffle, copy, and the
+submit/complete round trip -- is 2.7 ms at both 720p and 1080p; the sharpen +
+look pass is ~0. The 3x3 conv kernel is the whole game.
+
+### Two changes, both from how websr lays out its layers
+
+websr keeps weights as mat4x4 uniforms and features as vec4 per pixel. The
+part that transfers to `buildConv`:
+
+1. **vec4 weights** (`VEC4_WEIGHTS`). Weights are re-laid out at load time as
+   [ic][tap][oc] vec4s, padded to the 8-channel thread group, so each tap reads
+   two vec4s instead of eight scalars, and the 32 accumulators become eight
+   vec4s. Same arithmetic, same order: **max |diff| 0** against the scalar
+   kernel. 1080p lite 15.6 -> 14.4 ms, 2x 720p 20.8 -> 18.9, 2x 1080p 44.9 ->
+   40.9 (~8-9%); 720p lite unchanged.
+2. **f16 accumulation** (`F16_ACC`, only where storage is already f16). With the
+   weights already vec4, the accumulators, patch and weights can stay in f16.
+   Another 13-16%: lite 720p 7.6 -> 6.5 ms, 2x 720p 20.1 -> 16.8, 2x 1080p
+   43.8 -> 37.0. **Not bit-identical**, so judged the way section 10 judged f16
+   storage -- PSNR against ground truth on the 24 real codec-degraded frames:
+
+   | model | mean PSNR change | clips worse | worst pixel |
+   |---|---|---|---|
+   | 2x (perc) | +0.0094 dB | 0 of 6 | 5/255 |
+   | lite | +0.0003 dB | 1 of 6 (-0.0012) | 2/255 |
+
+   Engine parity with PyTorch drops for the 2x model from max 1/255 to **max
+   6/255, mean 0.17/255** -- so benchmark numbers now describe what ships to
+   within that, not exactly. Lite stays at max 2/255. `F16_ACC = false` restores
+   exact parity.
+
+In the extension, 2x at 720p30: 19 -> **14 ms** GPU, Mac GPU ~75% -> ~65%.
+
+### The governor needed a headroom rule
+
+The speed-up made 2x at 1080p *just* fit: 32 ms of a 33 ms frame, 30/30
+delivered -- and the GPU pinned at 97%, which is the complaint section 35
+started from. Delivered frames alone cannot see that. Auto now also steps down
+when GPU-timestamp time exceeds **80%** of the frame interval (Battery 60%,
+Max never), judged only where timestamps exist, since wall-clock time includes
+the completion latency. Result:
+
+| source | tier | GPU ms | Mac GPU util | delivered |
+|---|---|---|---|---|
+| 720p30 | 2x | 14 | ~65% | 30/30 |
+| 720p60 | lite | 5 | ~41% | 60/60 |
+| 1080p30 | lite (headroom) | 10 | ~48% | 30/30 |
+
+`LITE_COST_RATIO` is now 2.8 (14 / 5 ms), and the promotion test (< 70%) stays
+below the headroom limit (80%), so the two cannot oscillate.
+
+### Not taken from websr
+
+- **Features as vec4 per pixel (NHWC4).** Would cut the input-patch loads 4x,
+  but they are 16 loads per 288 FMAs per input channel -- not the bottleneck --
+  and it would touch every shader.
+- **First layer reading the video texture directly.** Would remove `pre` (a
+  3-channel pass). Its whole cost is inside the 2.7 ms fixed overhead.
+- **websr's unguarded edge reads**, which wrap into the neighbouring row and
+  corrupt 1-2 px at every border (up to 71/255 against a padded reference).
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
