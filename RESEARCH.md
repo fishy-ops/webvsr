@@ -1882,6 +1882,154 @@ Transformers are ruled out on arithmetic, not preference. SwinIR-lightweight is
 ~910k params (27x ours) and needs window shifting, channel LayerNorm and softmax
 attention — all slow and awkward in WGSL, on an engine already bandwidth-bound.
 
+## 35. A lite tier: a quarter of the parameters, three quarters of the gain
+
+The question was why an M4 Pro sits at 100% while this runs, and what a weaker
+machine should get. Everything below was measured on that M4 Pro in Chromium
+(WebGPU, f16, fused), Retina scale, with the extension itself driving playback.
+
+### Why the GPU is pegged
+
+The engine is not slow; the network is simply this much work. SPAN-Lite at C=16
+is ~33k MACs per input pixel: **61 GFLOP per 720p frame**, done in 18.9 ms, i.e.
+~3.3 TFLOPS effective. No kernel trick left in `webgpu-sr.js` buys 3x (f16 and
+fusion are already in, §10). The only large lever is fewer MACs per pixel.
+
+| source | GPU ms/frame | frames delivered | Mac GPU util |
+|---|---|---|---|
+| 480p30 | 8.6 | 30/30 | ~33% |
+| 720p30 | 18.9 | 30/30 | ~75% |
+| 720p60 | 18.9 | 35/59 | ~85% |
+| 1080p30 | 41.5 | 16/30 | ~90% |
+
+Three things made it worse than it had to be, all fixed:
+
+- **The governor flapped at exactly 1080p.** It compared a median frame time to
+  1.25x the frame interval; 1080p costs 42 ms against a 41.25 ms limit. It also
+  left passthrough on a single probe frame every 700 ms, on an idle GPU, which
+  is cheaper than sustained load -- so it switched back on, stuttered, and
+  switched off, with the GPU near 100% throughout. It now measures **SR frames
+  delivered / frames the video presented** (`requestVideoFrameCallback`
+  `presentedFrames`) over 2 s windows, and leaves passthrough only after a real
+  sustained trial with exponential backoff (4 s -> 60 s).
+- **Frames were dropped at 720p30 with the GPU only 19 ms busy per 33 ms.** A
+  frame arriving while the previous one's `onSubmittedWorkDone` was still
+  resolving was skipped. Queuing it recovered 27/30 -> 30/30.
+- **Output was 2x the source, not the size shown.** A 1080p video in a
+  1440-device-pixel player finished and sharpened at 2160. It now finishes at
+  the displayed size.
+
+### Width, measured in the engine
+
+Random weights of each shape; timing does not depend on the values (the shipped
+C=16 weights and random C=16 weights time identically).
+
+| C | params | 480p | 720p | 1080p |
+|---|---|---|---|---|
+| **8** | 8,956 | 2.8 ms | **5.8 ms** | **12.7 ms** |
+| 16 (shipped) | 33,388 | 8.6 ms | 18.9 ms | 41.5 ms |
+| 32 | 128,716 | 31.1 ms | 66.9 ms | -- |
+| 48 | 285,996 | 67.3 ms | 145.2 ms | -- |
+
+C=8 is **3.3x cheaper** and holds 1080p30 and 720p60 on this machine. C stays a
+multiple of 8 because the conv kernel computes 8 output channels per thread.
+
+The C=48 row answers "why not ship a pretrained model": OpenModelDB's
+live-action SPAN models (e.g. 2xLiveActionV1_SPAN) are 48 channels with 6
+blocks, so ~5 fps at 720p here even before the extra blocks -- and that one is
+CC-BY-NC-SA. The only pretrained family found that is actually real-time in a
+browser is Anime4K's CNN models and websr's live-action retrains of them (MIT).
+Worth evaluating as an option; not evaluated here.
+
+### Training it: two tries, one null
+
+All runs: C=8, from scratch, codec degradation, 5-epoch fidelity warm-up then
+perceptual (§34). Trainer validation DISTS, lower better (`perc` reached 0.1996):
+
+| run | change | epochs | val DISTS |
+|---|---|---|---|
+| c8 | -- | 45 | 0.2096 |
+| c8kd | + output distillation from `perc`, weight 4 | stopped at 12 | 0.2283 @ ep10 vs c8's 0.2282 |
+| **c8a** | + **anchor skip** | 30 | **0.2072** |
+
+**Distillation was null** and was stopped to free the machine: identical to the
+plain run at matched epochs. That makes the imported-technique base rate 1 in 10.
+
+**The anchor skip** is ABPN's: the input, nearest-upsampled, is added to the
+output, so the network learns only the residual over a trivial upscale.
+Implemented as `repeat_interleave(s^2)` before PixelShuffle, which is exactly
+nearest-neighbour. It trained faster at every matched epoch (loss 0.4305 vs
+0.4580 at epoch 6) and finished better in two thirds of the epochs. In the
+engine it costs nothing measurable (5.84 vs 5.80 ms at 720p): the shuffle pass
+already has the LR pixel's address, and the input is already in `x3`. It
+travels in the state dict as an `anchor_skip` buffer so a strict load into an
+un-anchored model fails instead of silently dropping it, and in the manifest as
+`"anchor": true`. Engine parity with PyTorch: max |diff| 1/255 for both c8 and
+c8a, and for `perc` after the shuffle change.
+
+### On the benchmark
+
+19 real-camera clips, CRF 28:
+
+| model | cam DISTS vs bic | wins | \|tLP\| vs bic | render DISTS | ΔDISTS vs perc | t |
+|---|---|---|---|---|---|---|
+| perc | +7.1% | 19/19 | -0.00009 | +14.8% | -- | -- |
+| **c8a** | **+5.5%** | **19/19** | +0.00058 | +7.4% | +0.00314 | +2.89 |
+| c8 | +4.9% | 19/19 | +0.00055 | +8.8% | +0.00421 | +4.04 |
+| c8 @ epoch 15 | +5.1% | 17/19 | +0.00162 | +8.0% | +0.00310 | +0.75 |
+
+`c8a` keeps **77% of `perc`'s camera margin at 31% of the cost**, and beats
+bicubic on every clip. It is significantly behind `perc` (t = 2.89), as a model a
+quarter the size should be -- which is why it is a fallback, not the default.
+
+Its flicker is slightly worse than bicubic's but **not significantly worse than
+`perc`'s** (Δ|tLP| t = 1.65). The epoch-15 snapshot of `c8` was the warning here:
++0.00162, significantly worse than `perc` (t = 2.31). Finishing the schedule cut
+it to a third. Early snapshots of small models over-state their flicker.
+
+### What ships
+
+A tier ladder in `content.js`: **full -> lite (`c8a`) -> basic -> original**.
+
+- Step down after two failing 2 s windows (<90% of frames delivered on Auto,
+  <97% on Battery). The page remembers the resolution, so the next video at
+  that size starts on lite instead of stuttering first.
+- Battery starts on lite.
+- **Basic** is no network at all: Catmull-Rom straight from the video's external
+  texture to display size, then the existing sharpen + look. ~3 ms at 1080p ->
+  1440p here, and it allocates no feature buffers -- which matters, because the
+  network's buffers are the only large allocation on the weak GPUs this is for.
+- A GPU error (out of memory, a buffer over the binding limit) or a lost device
+  used to be invisible: `onSubmittedWorkDone` resolves for a submission that
+  executed nothing, so the governor counted frames that never rendered. Found by
+  forcing a C=48 lite model (a 199 MB feature buffer, over the 128 MB default
+  binding limit): the HUD read 30/30 with the GPU at 0%. The engine now records
+  `uncapturederror` and device loss; an error steps down to basic, a lost device
+  stops cleanly.
+
+Result on the M4 Pro: 1080p30 **30/30 on lite at ~60% GPU** (was: flapping at
+~98%, then passthrough); 720p60 **60/60 on lite at ~48%**.
+
+Evidence: `/tank/webvsr/rank35_final_raw.txt`, `/tank/webvsr/evidence/35_lite_life.png`.
+
+### Rendering ahead does not help here
+
+Asked whether frames could be rendered ahead of playback instead of on the spot.
+A content script only ever sees the frame being presented; decoding ahead means
+demuxing and decoding the stream with WebCodecs, which EME (DRM) forbids and
+YouTube's MSE pipeline makes fragile, and showing frames late means delaying
+audio the page owns. More fundamentally, a buffer smooths variance but not a
+deficit: at 42 ms per frame against a 33 ms interval it empties in seconds.
+Capacity has to come from a cheaper model, which is what this section does.
+
+### Still open
+
+- `fdlperc` for animation (§34) is still unshipped; the same ladder could carry
+  it as a content-specific tier.
+- A lite 4x model does not exist; 4x steps from full straight to basic.
+- Anime4K / websr as an opt-in pretrained tier: MIT, real-time, unevaluated on
+  this benchmark.
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
