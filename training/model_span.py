@@ -81,8 +81,17 @@ class SPANLite(nn.Module):
     4 SPAB blocks, 32 channels (vs original 6 blocks, 48 channels)."""
 
     def __init__(self, num_in_ch=3, num_out_ch=3, feature_channels=32,
-                 upscale=2, img_range=1.0):
+                 upscale=2, img_range=1.0, anchor=False):
         super().__init__()
+        # Anchor skip (ABPN): add the input, nearest-upsampled, to the output so
+        # the network only learns the residual over a trivial upscale. Stored
+        # as a buffer so it travels in the state dict: a strict load of an
+        # anchored checkpoint into an un-anchored model fails loudly instead of
+        # silently producing a different network. SPANLite.anchored(state)
+        # reads it back.
+        if anchor:
+            self.register_buffer("anchor_skip", torch.ones(1))
+        self.anchor = anchor
         self.img_range = img_range
         self.upscale = upscale
         self.mean = torch.Tensor([0.4488, 0.4371, 0.4040]).view(1, 3, 1, 1)
@@ -104,6 +113,7 @@ class SPANLite(nn.Module):
 
     def forward(self, x):
         self.mean = self.mean.type_as(x)
+        x_in = x
         x = (x - self.mean) * self.img_range
 
         f0 = self.conv_first(x)
@@ -114,8 +124,18 @@ class SPANLite(nn.Module):
 
         b4 = self.conv_last(b4)
         out = self.conv_cat(torch.cat([f0, b1_mid, b3_mid, b4], dim=1))
+        if self.anchor:
+            # repeat_interleave matches PixelShuffle's channel order
+            # (c * s^2 + sub-pixel), so every sub-pixel of an output pixel gets
+            # its own LR pixel: exactly a nearest-neighbour upscale.
+            out = self.upsampler[0](out) + x_in.repeat_interleave(self.upscale ** 2, dim=1)
+            return self.upsampler[1](out)
         out = self.upsampler(out)
         return out
+
+    @staticmethod
+    def anchored(state):
+        return "anchor_skip" in state
 
 
 def count_params(model):

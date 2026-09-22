@@ -294,7 +294,8 @@ def load_model(ckpt, channels, scale, device, arch="span", depth=None):
         from model_span_v2 import SPANLiteV2
         model = SPANLiteV2(feature_channels=channels, upscale=scale)
     else:
-        model = SPANLite(feature_channels=channels, upscale=scale)
+        model = SPANLite(feature_channels=channels, upscale=scale,
+                         anchor=SPANLite.anchored(peek))
     blob = torch.load(ckpt, map_location="cpu", weights_only=False)
     state = blob.get("model", blob.get("model_state_dict", blob))
     model.load_state_dict(state)

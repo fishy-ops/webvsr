@@ -21,6 +21,7 @@ import argparse
 import json
 import re
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -68,6 +69,11 @@ def main():
     args = ap.parse_args()
 
     out = Path(args.out or f"/tank/webvsr/rank_crf{args.crf}.txt")
+    if not args.out and out.exists():
+        # Raw rankings are evidence. The default name is shared by every run at
+        # this CRF, and reusing it silently overwrote an earlier result once
+        # (restored from a ZFS snapshot), so never reuse it: stamp a new one.
+        out = out.with_name(f"{out.stem}_{time.strftime('%Y%m%d_%H%M%S')}{out.suffix}")
     if args.height != 1024:
         print(f"NOTE: height {args.height}, not the project default 1024 — "
               f"these numbers are not comparable to the main benchmark.")
@@ -77,13 +83,19 @@ def main():
     names = []
     for spec in args.models:
         name, ckpt = spec.split("=", 1)
+        # NAME=CKPT:C overrides --channels for one model, so models of
+        # different widths can be ranked in the same pass.
+        ch = args.channels
+        m = re.match(r"^(.*):(\d+)$", ckpt)
+        if m:
+            ckpt, ch = m.group(1), int(m.group(2))
         p = Path(ckpt)
         if not p.is_absolute():
             p = ROOT / p
         if not p.exists():
             sys.exit(f"missing checkpoint: {p}")
         names.append(name)
-        cmd += ["--model", f"{name}={p}:{args.channels}:{args.scale}"]
+        cmd += ["--model", f"{name}={p}:{ch}:{args.scale}"]
 
     print(f"evaluating {len(names)} models in one pass at CRF {args.crf}...", flush=True)
     with open(out, "w") as f:

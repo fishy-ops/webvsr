@@ -48,7 +48,8 @@ def export_weights(checkpoint_path, output_path, channels=32, scale=2):
                            num_blocks=n_blocks)
         early = [d for d in sorted(depths) if d != max(depths)]
     else:
-        model = SPANLite(num_in_ch=3, num_out_ch=3, feature_channels=channels, upscale=scale)
+        model = SPANLite(num_in_ch=3, num_out_ch=3, feature_channels=channels, upscale=scale,
+                         anchor=SPANLite.anchored(state))
     model.load_state_dict(state)
     model.eval()
 
@@ -110,6 +111,11 @@ def export_weights(checkpoint_path, output_path, channels=32, scale=2):
     manifest_path = output_path.rsplit('.', 1)[0] + '.json'
     with open(manifest_path, 'w') as f:
         man = {"channels": channels, "scale": scale, "blocks": len(blocks)}
+        if getattr(model, "anchor", False):
+            # The engine adds the nearest-upsampled input in its shuffle pass.
+            # An engine that ignores this key would render the residual alone
+            # (a dark, wrong image), so only an anchor-aware engine may load it.
+            man["anchor"] = True
         if early:
             # Which early exits trail the deepest one, in file order. An engine
             # that does not understand this key still reads the full-depth

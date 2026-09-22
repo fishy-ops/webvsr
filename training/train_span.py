@@ -297,6 +297,17 @@ def train():
                         help="weight on Oklab chroma + blurred CIE L* agreement. "
                              "Aimed at the 4:2:0 chroma loss the codec "
                              "degradation deliberately introduces")
+    # Output distillation for small models: a frozen teacher (normally the
+    # shipped 16-channel model) supplies a second target alongside the ground
+    # truth. The teacher's output is something the architecture family can
+    # actually reach, which is a far easier target for an 8-channel student
+    # than GT detail it has no capacity to reconstruct.
+    parser.add_argument("--anchor", action="store_true",
+                        help="add the nearest-upsampled input to the output (ABPN anchor skip)")
+    parser.add_argument("--teacher", default=None, metavar="CKPT:C",
+                        help="frozen SPANLite teacher checkpoint and its channel count")
+    parser.add_argument("--w-distill", type=float, default=0.0,
+                        help="weight on Charbonnier(student, teacher) output distance")
     parser.add_argument("--w-fdl", type=float, default=0.0,
                         help="weight on the Frequency Distribution Loss "
                              "(misalignment-robust feature-statistics matching)")
@@ -381,6 +392,10 @@ def train():
     else:
         _Arch = SPANLite
     _kw = {}
+    if args.anchor:
+        if args.arch != "span":
+            raise SystemExit("--anchor is only implemented for --arch span")
+        _kw["anchor"] = True
     if args.arch == "spanme":
         _kw["exit_depths"] = tuple(int(d) for d in args.exit_depths.split(","))
     model = _Arch(
@@ -395,6 +410,21 @@ def train():
     if multi_exit:
         print(f"multi-exit depths {model.exit_depths}, aux weight {args.aux_weight}")
     print(f"SPAN-Lite: {count_params(model):,} trainable parameters")
+
+    teacher = None
+    if args.teacher and args.w_distill > 0:
+        t_path, t_ch = args.teacher.rsplit(":", 1)
+        blob = torch.load(t_path, map_location="cpu", weights_only=False)
+        t_state = blob.get("model", blob.get("model_state_dict", blob))
+        teacher = SPANLite(upscale=cfg["scale"], feature_channels=int(t_ch),
+                           anchor=SPANLite.anchored(t_state)).to(device)
+        missing, unexpected = teacher.load_state_dict(t_state, strict=False)
+        if missing:
+            raise SystemExit(f"teacher {t_path}: {len(missing)} missing tensors -- wrong channel count?")
+        teacher.eval()
+        for p_ in teacher.parameters():
+            p_.requires_grad_(False)
+        print(f"distilling from {t_path} ({t_ch}ch), weight {args.w_distill}")
 
     # ── Data ────────────────────────────────────────────────────────
     twin = args.twin_consistency > 0
@@ -588,6 +618,17 @@ def train():
                         sr = F.interpolate(sr, size=hr.shape[2:], mode="bicubic",
                                            align_corners=False).clamp(0, 1)
                     loss, components = criterion(sr, hr)
+
+                if teacher is not None:
+                    with torch.no_grad():
+                        t_out = teacher(lr).clamp(0, 1)
+                        if t_out.shape != sr.shape:
+                            t_out = F.interpolate(t_out, size=sr.shape[2:], mode="bicubic",
+                                                  align_corners=False).clamp(0, 1)
+                    kd = torch.sqrt((sr.float() - t_out.float()) ** 2 + 1e-6).mean()
+                    loss = loss + args.w_distill * kd
+                    components = dict(components)
+                    components["distill"] = float(kd.detach())
 
                 if twin:
                     # Same HR, so any disagreement between the two outputs is
