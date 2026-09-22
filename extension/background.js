@@ -21,9 +21,9 @@ const DEFAULT_SETTINGS = {
   sharpnessCustom: false,// true = user is on the custom slider (sharpness can exceed High)
   autoEngage: true,      // only run SR when the source is clearly lower-res than the display
   showCompare: false,    // show the on-video hold-to-compare button (opt-in)
-  look: 'vivid',       // colour/tone grade on top of the upscale.
-                         // 'natural' is exactly zero adjustment, so the
-                         // default output is only what the model recovered.
+  look: 'vivid',         // colour/tone grade on top of the upscale.
+                         // 'natural' is exactly zero adjustment.
+  settingsVersion: 2,    // see migrate(); fresh installs start current
 };
 
 let SETTINGS = { ...DEFAULT_SETTINGS };
@@ -43,10 +43,17 @@ function migrate(st) {
   }
   // Punchier defaults (sharpness 3.5, Vivid). Only move installs that are still
   // sitting on the OLD defaults exactly -- those values were never chosen, they
-  // were just what shipped. Anyone who picked their own sharpness or look keeps
-  // it, because overriding a deliberate choice on update is not ours to make.
-  if (st.sharpness === 1.4 && !st.sharpnessCustom) st.sharpness = 3.5;
-  if (!st.look || st.look === 'natural') st.look = 'vivid';
+  // were just what shipped.
+  //
+  // This must run ONCE. It used to run on every service-worker start, and an
+  // MV3 worker is torn down after ~30s idle, so anyone who picked Natural was
+  // flipped back to Vivid within a minute: 'natural' was both the old default
+  // and a real choice, and without a version the two are indistinguishable.
+  if ((st.settingsVersion || 1) < 2) {
+    if (st.sharpness === 1.4 && !st.sharpnessCustom) st.sharpness = 3.5;
+    if (!st.look || st.look === 'natural') st.look = 'vivid';
+    st.settingsVersion = 2;
+  }
   return st;
 }
 

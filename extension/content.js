@@ -30,13 +30,35 @@ const START_NEURAL = 216;   // conservative start so first frames never stall
 //
 //   cap       ceiling on neural input height. Only bites on video taller than
 //             it; the input is never below the source either way.
-//   giveUpAt  multiple of the frame interval at which we stop enhancing and
-//             pass the original through. Lower = protects smoothness sooner.
+//   minRatio  share of the video's own frames SR must actually deliver, over a
+//             measurement window, to stay on. Below it we step down a tier
+//             (full model -> lite model -> original). 0 = never step down.
+//   lite      start on the lite model instead of the full one.
 const POWER = {
-  auto:    { cap: NEURAL_CAP, giveUpAt: 1.25 },   // the default
-  battery: { cap: 720,        giveUpAt: 1.05 },   // fans and drain down
-  max:     { cap: NEURAL_CAP, giveUpAt: Infinity },// quality over smoothness
+  auto:    { cap: NEURAL_CAP, minRatio: 0.9,  lite: false },  // the default
+  battery: { cap: 720,        minRatio: 0.97, lite: true },   // fans and drain down
+  max:     { cap: NEURAL_CAP, minRatio: 0,    lite: false },  // quality over smoothness
 };
+
+// Keep-up measurement. The old governor compared a median per-frame wall time
+// against the frame interval, which was wrong in both directions: the wall time
+// included promise-resolution latency and first-frame shader compilation (false
+// passthrough), and the loop ran on requestAnimationFrame, so a frame that took
+// 1.02x the interval really delivered every other frame while still counting as
+// "keeping up" (choppy SR left on). Leaving passthrough was decided by a lone
+// probe frame on an idle GPU every 700ms, which is cheaper than sustained load,
+// so it flapped on, stuttered, and flapped off.
+//
+// Now: count what the viewer sees -- SR frames delivered / frames the video
+// presented (requestVideoFrameCallback's presentedFrames) -- over real playback
+// windows, and leave passthrough only after a real sustained trial.
+const WINDOW_MS = 2000;       // one measurement window of playback
+const WARMUP_MS = 700;        // ignored after (re)configure: pipeline compile, first allocs
+const FAIL_WINDOWS = 2;       // consecutive failing windows before giving up
+const TRIAL_FIRST_MS = 4000;  // first retry after giving up; doubles per failed trial
+const TRIAL_MAX_MS = 60000;
+const GAP_MS = 400;           // a gap this long between frames = pause/seek, restart the window
+const LITE_COST_RATIO = 3.3;  // full-model cost / lite-model cost, measured on an M4 Pro
 const powerOf = () => POWER[settings.power] || POWER.auto;
 
 
@@ -51,7 +73,19 @@ let settings = {
 // reconstruction; ≤2 uses the 2× model. (chrome.runtime is available here.)
 const MODEL_2X = chrome.runtime.getURL('models/span_lite_2x_c16.bin');
 const MODEL_4X = chrome.runtime.getURL('models/span_lite_4x_c16.bin');
-const modelForScale = (s) => (s > 2 ? MODEL_4X : MODEL_2X);
+// The lite tier: 8 channels instead of 16, ~3.3x cheaper per pixel (5.8ms vs
+// 18.9ms at 720p on an M4 Pro). A GPU that can't hold the full model gets this
+// before it gets the original video back. 2x only; 4x has no lite model.
+const MODEL_2X_LITE = chrome.runtime.getURL('models/span_lite_2x_c8.bin');
+let liteMissing = false;   // set if the lite weights fail to load; never retried
+// Source heights at which the full model already failed on this page, so the
+// next video at that size (playlist next, SPA navigation) starts on lite
+// instead of stuttering for two windows first. Per page, never persisted: a
+// different tab or a later session may have a quieter GPU.
+const fullFailedAt = new Set();
+const tierKey = (h) => h + '|' + (settings.power || 'auto') + '|' + (settings.targetScale || 2);
+const liteAvailable = (s) => s <= 2 && !liteMissing;
+const modelFor = (s, lite) => (s > 2 ? MODEL_4X : (lite && liteAvailable(s) ? MODEL_2X_LITE : MODEL_2X));
 
 // ── Shared engine (one GPU device for the page) ───────────────────
 let engine = null, enginePromise = null, engineError = null, activeOverlay = null;
@@ -85,15 +119,13 @@ class VideoOverlay {
     this.video = video;
     this.active = false;
     this.processing = false;
-    this.animId = null;
-    this.frameTimes = [];
     this.lastMs = 0;
     this.cfgInW = 0; this.cfgInH = 0; this.cfgDispW = 0; this.cfgDispH = 0;
-    this.lastMediaTime = -1;
-    this._rvfcOn = false;
+    this._rvfcId = null;
+    this._tick = null;
     this.comparing = false;
     this.cantKeepUp = false;   // SR can't match the source framerate → pass through
-    this._lastProbe = 0;
+    this.resetGovernor();
     this._srcW = 0; this._srcH = 0;   // last seen intrinsic video resolution
     this._needsFirstFrame = true;     // hide SR output until a fresh frame is rendered
     this.buildUI();
@@ -104,6 +136,16 @@ class VideoOverlay {
     const onSrc = () => this.onSourceChange();
     this.video.addEventListener('loadstart', onSrc);
     this.video.addEventListener('emptied', onSrc);
+    // Seeking while paused shows a new frame without playback, and
+    // requestVideoFrameCallback is not guaranteed to fire for it -- measured
+    // not firing in Chromium -- which left the previous SR frame covering the
+    // new position. Enhance the seeked-to frame directly.
+    this.video.addEventListener('seeked', () => {
+      if (!this.active || !engine || !this.video.paused) return;
+      if (this.gated() || (this.cantKeepUp && !this.trialing)) return;
+      if (this.processing) this._pending = true;
+      else this.processFrame();
+    });
 
     // Remember-state: auto-enable where the user left it on.
     if (settings.rememberState && settings.enabled) {
@@ -119,12 +161,36 @@ class VideoOverlay {
   onSourceChange() {
     this._srcW = 0; this._srcH = 0;
     this.cfgInW = 0; this.cfgInH = 0; this.cfgDispW = 0; this.cfgDispH = 0;
-    this.lastMediaTime = -1;
-    this.frameTimes = [];
-    this.cantKeepUp = false;
+    this.resetGovernor();
     this.processing = false;
     this._needsFirstFrame = true;
     this.outCanvas.style.display = 'none';   // reveal the original until SR is ready
+  }
+
+  // Forget everything measured about keeping up: new source, new resolution, or
+  // a setting that changes the cost. A verdict about the old situation says
+  // nothing about the new one.
+  resetGovernor() {
+    this.lite = !!((powerOf().lite || fullFailedAt.has(tierKey(this._srcH)))
+                   && liteAvailable(settings.targetScale || 2));
+    this._promoted = false;
+    this.basic = false;        // no-network tier: bicubic + sharpen, for GPUs lite is too much for
+    this.cantKeepUp = false;
+    this.trialing = false;
+    this._trialDelay = TRIAL_FIRST_MS;
+    this._nextTrialAt = 0;
+    this._failStreak = 0;
+    this.lastRatio = null;
+    this.srcFps = 0;
+    this.restartWindow();
+  }
+
+  restartWindow(now = performance.now()) {
+    this._winStart = now + WARMUP_MS;   // frames before this don't count
+    this._winSrc = 0;                   // frames the video presented in the window
+    this._winSr = 0;                    // SR frames finished in the window
+    this._lastPresented = null;
+    this._lastCb = now;
   }
 
   buildUI() {
@@ -276,10 +342,39 @@ class VideoOverlay {
   }
 
   toggleFlyout() {
-    const show = this.flyout.style.display === 'none';
-    this.flyout.style.display = show ? 'block' : 'none';
-    if (show) { this.powerSeg.refresh(); this.lookSeg.refresh(); }
+    if (this.flyout.style.display === 'none') this.openFlyout();
+    else this.closeFlyout();
+  }
+
+  // Any press outside the flyout (and outside the gear, which toggles it
+  // itself) closes it, as does Escape. Listened for in the capture phase on
+  // pointerdown, so a site that stops click propagation -- most video players
+  // do -- can't keep it open. composedPath() sees through shadow roots.
+  openFlyout() {
+    this.flyout.style.display = 'block';
+    this.powerSeg.refresh(); this.lookSeg.refresh();
+    this._onOutside = (e) => {
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.includes(this.flyout) || path.includes(this.gearBtn)) return;
+      this.closeFlyout();
+    };
+    this._onEsc = (e) => { if (e.key === 'Escape') this.closeFlyout(); };
+    document.addEventListener('pointerdown', this._onOutside, true);
+    document.addEventListener('keydown', this._onEsc, true);
+    // Leaving the page for another window/tab also counts as clicking away.
+    window.addEventListener('blur', this._onOutside);
     this.showChrome();
+  }
+
+  closeFlyout() {
+    this.flyout.style.display = 'none';
+    if (this._onOutside) {
+      document.removeEventListener('pointerdown', this._onOutside, true);
+      document.removeEventListener('keydown', this._onEsc, true);
+      window.removeEventListener('blur', this._onOutside);
+      this._onOutside = this._onEsc = null;
+    }
+    this._armHide();
   }
 
   // Which controls may exist on screen at all (independent of the fade state).
@@ -325,7 +420,7 @@ class VideoOverlay {
 
   setComparing(on) {
     this.comparing = on;
-    if (this.active) this.outCanvas.style.display = on ? 'none' : '';  // reveal original while held
+    this.updateVisibility();   // reveal the original while held
   }
 
   async toggle() { if (this.active) this.stop(); else await this.start(); }
@@ -341,18 +436,28 @@ class VideoOverlay {
     if (activeOverlay && activeOverlay !== this) activeOverlay.stop();
     activeOverlay = this;
 
+    if (typeof this.video.requestVideoFrameCallback !== 'function') {
+      this.fail('this browser has no requestVideoFrameCallback'); return;
+    }
     const e = await Promise.race([getEngine(),
       new Promise((r) => setTimeout(() => r('__t__'), 10000))]);
     if (e === '__t__') { this.fail('GPU init timed out (10s)'); enginePromise = null; return; }
     if (!e) { this.fail(engineError || 'WebGPU init failed'); return; }
+    if (!this.active) return;   // stopped while the engine was starting
 
     this.cfgInW = 0; this.cfgInH = 0; this.cfgDispW = 0; this.cfgDispH = 0;
-    this.frameTimes = [];
     this._srcW = 0; this._srcH = 0; this._needsFirstFrame = true;
-    this.outCanvas.style.display = 'none';   // the loop reveals it after the first frame
+    this.resetGovernor();
+    this.outCanvas.style.display = 'none';   // revealed after the first SR frame lands
     if (settings.showStats) this.statsEl.textContent = 'Processing…';
-    this.measureFps();
-    this.loop();
+    this.schedule();
+    // Visibility can change without a new frame (resize or fullscreen while
+    // paused, the tab coming back), so re-check it on a slow timer too.
+    clearInterval(this._tick);
+    this._tick = setInterval(() => this.updateVisibility(), 500);
+    // A frame is already on screen if the video is paused; enhance it now
+    // rather than waiting for playback to present a new one.
+    if (this.video.readyState >= 2 && !this.gated()) this.processFrame();
   }
 
   fail(msg) {
@@ -360,14 +465,15 @@ class VideoOverlay {
     this.statsEl.style.opacity = '1';
     this.statsEl.textContent = 'Unavailable:\n' + msg;
     this.active = false; this.styleBtn(false); this.gateControls(); this.showChrome();
+    this.unschedule();
   }
 
   stop() {
     this.active = false;
     this.styleBtn(false);
     this.gateControls();
-    this.flyout.style.display = 'none';
-    if (this.animId) { cancelAnimationFrame(this.animId); this.animId = null; }
+    this.closeFlyout();
+    this.unschedule();
     this.outCanvas.style.display = 'none';
     this.statsEl.style.display = 'none';
     this.showChrome();
@@ -386,32 +492,40 @@ class VideoOverlay {
     });
   }
 
-  measureFps() {
-    if (this._rvfcOn || typeof this.video.requestVideoFrameCallback !== 'function') return;
-    this._rvfcOn = true;
-    let count = 0, t0 = 0;
-    const cb = (now) => {
-      if (!this.active) { this._rvfcOn = false; return; }
-      if (!t0) t0 = now;
-      count++;
-      const el2 = now - t0;
-      if (el2 >= 1000) {
-        const fps = count * 1000 / el2;
-        this._frameInterval = 1000 / Math.min(fps, 60);
-        count = 0; t0 = now;
-      }
-      this.video.requestVideoFrameCallback(cb);
-    };
-    this.video.requestVideoFrameCallback(cb);
+  // Frames are driven by the video itself: one callback per frame the browser
+  // presents, instead of polling currentTime from requestAnimationFrame at the
+  // display's refresh rate. Nothing runs while the video is paused.
+  schedule() {
+    if (this._rvfcId != null) return;
+    this._rvfcId = this.video.requestVideoFrameCallback((now, meta) => this.onVideoFrame(now, meta));
+  }
+
+  unschedule() {
+    if (this._rvfcId != null) {
+      this.video.cancelVideoFrameCallback?.(this._rvfcId);
+      this._rvfcId = null;
+    }
+    clearInterval(this._tick); this._tick = null;
   }
 
   gatedByFullscreen() {
     return settings.onlyFullscreen && !document.fullscreenElement;
   }
 
-  paused() {
-    return this.video.paused || this.video.ended ||
-      (settings.autoPause && document.hidden) || this.comparing || this.gatedByFullscreen();
+  // Reasons not to enhance at all right now (distinct from "can't keep up").
+  gated() {
+    return (settings.autoPause && document.hidden) || this.comparing
+      || this.gatedByFullscreen() || this.notWorthIt;
+  }
+
+  // Device-pixel height of the picture itself inside the element: the element
+  // box can be taller than the video when it is letterboxed.
+  shownHeight() {
+    const r = this.video.getBoundingClientRect();
+    const vw = this.video.videoWidth, vh = this.video.videoHeight;
+    if (!r.height || !vw || !vh) return 0;
+    const cssH = Math.min(r.height, r.width * vh / vw);
+    return Math.round(cssH * (window.devicePixelRatio || 1));
   }
 
   // Auto-engage: SR only helps when the source is clearly below the on-screen
@@ -419,38 +533,110 @@ class VideoOverlay {
   autoSkip() {
     if (!settings.autoEngage) return false;
     const vh = this.video.videoHeight;
-    if (!vh) return false;
-    const rect = this.video.getBoundingClientRect();
-    const dispH = (rect.height || 0) * (window.devicePixelRatio || 1);
-    if (dispH <= 0) return false;
+    const dispH = this.shownHeight();
+    if (!vh || dispH <= 0) return false;
     return vh >= dispH * 0.85;
   }
 
-  loop() {
+  // Show the SR canvas only when it holds a current, enhanced frame and we mean
+  // to show it; otherwise the original video underneath is what's seen.
+  updateVisibility() {
     if (!this.active) return;
+    const wasSkipping = this.notWorthIt;
     this.notWorthIt = this.autoSkip();
-    // Reveal the original when gated, comparing, can't-keep-up, not worth it, or
-    // while we're still waiting on the first rendered frame after a (re)start.
-    const hide = this.gatedByFullscreen() || this.comparing || this.cantKeepUp
-      || this.notWorthIt || this._needsFirstFrame;
-    if (hide && this.outCanvas.style.display !== 'none') this.outCanvas.style.display = 'none';
-    else if (!hide && this.outCanvas.style.display === 'none') this.outCanvas.style.display = '';
-    if (this.notWorthIt && settings.showStats) {
-      this.statsEl.innerHTML =
-        '<span style="color:#2b3242;font-weight:700">Crisp</span> <span style="color:#7a8494">idle</span>\n' +
-        'already about as sharp as\nyour screen, nothing to fix here';
+    const hide = this.gated() || this.cantKeepUp || this.trialing || this._needsFirstFrame;
+    const want = hide ? 'none' : '';
+    if (this.outCanvas.style.display !== want) this.outCanvas.style.display = want;
+    if (this.notWorthIt !== wasSkipping) this.restartWindow();
+    if (settings.showStats) this.refreshStats();
+  }
+
+  onVideoFrame(now, meta) {
+    this._rvfcId = null;
+    if (!this.active) return;
+    this.schedule();
+
+    // presentedFrames counts every frame the compositor showed, including ones
+    // whose callbacks were coalesced, so it is the true denominator.
+    const presented = meta && meta.presentedFrames;
+    if (now - this._lastCb > GAP_MS) this.restartWindow(now);   // resumed after a pause/seek
+    this._lastCb = now;
+    if (now >= this._winStart) {
+      const known = presented != null && this._lastPresented != null;
+      this._winSrc += known ? Math.max(1, presented - this._lastPresented) : 1;
+    }
+    this._lastPresented = presented ?? null;
+
+    this.updateVisibility();
+    if (this.gated()) { this.restartWindow(now); return; }
+
+    // Given up: sit idle, and every so often run a real trial -- sustained
+    // playback, canvas hidden -- rather than trusting a single probe frame.
+    if (this.cantKeepUp && !this.trialing) {
+      if (now < this._nextTrialAt) return;
+      this.trialing = true;
+      this.restartWindow(now);
     }
 
-    if (!this.processing && !this.paused() && !this.notWorthIt
-        && this.video.currentTime !== this.lastMediaTime) {
-      if (this.cantKeepUp) {
-        const now = performance.now();
-        if (now - this._lastProbe > 700) { this._lastProbe = now; this.processFrame(); }
+    // A frame that lands while the previous one is still being confirmed is not
+    // dropped: it runs the moment that one completes. The confirmation
+    // (onSubmittedWorkDone) resolves some milliseconds after the GPU actually
+    // finishes, and skipping outright cost ~10% of frames at 720p30 on an M4
+    // Pro with the GPU only 19ms busy per 33ms frame. When the GPU truly can't
+    // keep up, this runs it back-to-back, and the window measures exactly that.
+    if (this.processing) this._pending = true;
+    else this.processFrame();
+    this.maybeCloseWindow(now);
+  }
+
+  maybeCloseWindow(now) {
+    const span = now - this._winStart;
+    if (span < WINDOW_MS || this._winSrc < 8) return;
+    const ratio = Math.min(1, this._winSr / this._winSrc);
+    this.srcFps = this._winSrc * 1000 / span;
+    this.lastRatio = ratio;
+    const need = powerOf().minRatio;
+    const ok = ratio >= need;
+
+    if (this.trialing) {
+      this.trialing = false;
+      if (ok) {
+        this.cantKeepUp = false;
+        this._trialDelay = TRIAL_FIRST_MS;
       } else {
-        this.processFrame();
+        this._trialDelay = Math.min(this._trialDelay * 2, TRIAL_MAX_MS);
+        this._nextTrialAt = now + this._trialDelay;
+      }
+    } else if (!this.cantKeepUp) {
+      this._failStreak = ok ? 0 : this._failStreak + 1;
+      if (this._failStreak >= FAIL_WINDOWS) {
+        this._failStreak = 0;
+        if (!this.lite && !this.basic && liteAvailable(settings.targetScale || 2)) {
+          // Step down to the lite model rather than straight to the original.
+          // The next frame swaps weights; the window restarts once it lands.
+          this.lite = true;
+          fullFailedAt.add(tierKey(this._srcH));
+        } else if (!this.basic) {
+          // Then to no network at all. Still sharper than the browser's own
+          // scaling, and costs a few ms even on an integrated GPU.
+          this.basic = true;
+          this.restartWindow(now);
+        } else {
+          this.cantKeepUp = true;
+          this._nextTrialAt = now + this._trialDelay;
+        }
+      } else if (ok && this.lite && !powerOf().lite && !this._promoted && this.lastGpuMs
+                 && this.lastGpuMs * LITE_COST_RATIO < 0.7 * (1000 / this.srcFps)) {
+        // Demoted by a hiccup (a heavy page, another tab) with plenty of room
+        // now: try the full model once more. Once per reset, so a GPU that sits
+        // on the boundary can't bounce between the two.
+        this._promoted = true;
+        this.lite = false;
       }
     }
-    this.animId = requestAnimationFrame(() => this.loop());
+    // Next window starts immediately; only a (re)configure needs a warm-up.
+    this._winStart = now; this._winSrc = 0; this._winSr = 0;
+    this.updateVisibility();
   }
 
   processFrame() {
@@ -464,58 +650,72 @@ class VideoOverlay {
     if (vw !== this._srcW || vh !== this._srcH) {
       this._srcW = vw; this._srcH = vh;
       this.cfgInW = 0; this.cfgInH = 0;
-      this.frameTimes = [];
-      this.cantKeepUp = false;
+      this.resetGovernor();
       this._needsFirstFrame = true;
     }
 
-    // Load the model that matches the target scale (2× vs native 4×). Swap is
-    // async; skip frames while it happens, and fall back to 2× if 4× is missing.
-    const want = modelForScale(settings.targetScale || 2);
-    if (engine._modelUrl !== want && !this._switching) {
+    // Load the model for the target scale (2x vs native 4x) and tier (full vs
+    // lite). Swap is async; skip frames while it happens. A swap only restarts
+    // the measurement window: resetting the governor here would put the tier
+    // back to full and undo the step-down that asked for the swap.
+    const want = modelFor(settings.targetScale || 2, this.lite);
+    if (!this.basic && engine._modelUrl !== want && !this._switching) {
       this._switching = true;
+      const done = () => { this.cfgInW = 0; this._switching = false; this.restartWindow(); };
       engine.switchModel(want)
-        .then(() => { this.cfgInW = 0; this._switching = false; })
+        .then(done)
         .catch(() => {
+          if (want === MODEL_2X_LITE) {
+            // No usable lite weights. If this was a step-down, take the next
+            // one (basic); if lite was just the Battery default, run full.
+            liteMissing = true;
+            if (this.lite && !powerOf().lite) this.basic = true;
+            this.lite = false;
+          }
           if (want !== MODEL_2X) {
-            engine.switchModel(MODEL_2X).then(() => { this.cfgInW = 0; this._switching = false; })
-              .catch(() => { this._switching = false; });
+            engine.switchModel(MODEL_2X).then(done).catch(() => { this._switching = false; });
           } else { this._switching = false; }
         });
     }
     if (this._switching) return;
 
     this.processing = true;
-    this.lastMediaTime = this.video.currentTime;
     const t0 = performance.now();
     try {
-      const frameInt = this._frameInterval || 33;
       // Never feed the network fewer pixels than the source has. Anything below
       // `srcH` is reconstructing detail we destroyed ourselves, so it is worse
-      // than passthrough by construction; when the budget cannot be met at this
-      // height the governor gives up and passes the original through instead.
+      // than passthrough by construction; when SR cannot keep up at this height
+      // the governor passes the original through instead.
       const srcH = Math.min(NEURAL_CAP, vh);
       const ceilH = Math.min(srcH, powerOf().cap);
-      this._floorH = ceilH;
-
-      // Floor and ceiling are now the same value, so the neural input is simply
-      // the source height (capped). The governor no longer trades resolution for
-      // frame time -- it only decides whether to run at all, via cantKeepUp.
       const nH = Math.max(MIN_NEURAL, ceilH) & ~1;
-      let nW = Math.round(vw * nH / vh) & ~1;
+      const nW = Math.round(vw * nH / vh) & ~1;
 
+      // Finish at the size the video is actually shown, never larger: pixels
+      // past that are thrown away by the compositor after we paid for the
+      // resample and the sharpen. A 1080p video in a 1440-device-pixel-tall
+      // player was finishing at 2160 -- 2.25x the sharpen work for nothing.
+      // Fullscreen or a resize changes the shown size, and the check below
+      // reconfigures on the next frame.
       const scale = settings.targetScale || 2;
+      const shownH = this.shownHeight();
       let dH = Math.min(Math.round(vh * scale), DISPLAY_CAP);
-      let dW = Math.round(dH * vw / vh);
-      this._nW = nW; this._nH = nH; this._dW = dW; this._dH = dH; this._ceilH = ceilH;
+      if (shownH > 0) dH = Math.min(dH, Math.max(vh, shownH));
+      dH &= ~1;
+      const dW = Math.round(dH * vw / vh) & ~1;
+      this._nW = nW; this._nH = nH; this._dW = dW; this._dH = dH;
 
-      if (nW !== this.cfgInW || nH !== this.cfgInH || dW !== this.cfgDispW || dH !== this.cfgDispH) {
-        engine.configure(this.outCanvas, nW, nH, dW, dH);
+      if (nW !== this.cfgInW || nH !== this.cfgInH || dW !== this.cfgDispW || dH !== this.cfgDispH
+          || this.basic !== this.cfgBasic) {
+        engine.configure(this.outCanvas, nW, nH, dW, dH, { neural: !this.basic });
         this.cfgInW = nW; this.cfgInH = nH; this.cfgDispW = dW; this.cfgDispH = dH;
+        this.cfgBasic = this.basic;
+        this.restartWindow();   // new buffers and a pipeline warm-up: don't score them
       }
       engine.sharpen = settings.sharpness || 0;
       if (engine.setLook) engine.setLook(settings.look || 'natural');
-      engine.render(this.video);
+      if (this.basic) engine.renderBasic(this.video);
+      else engine.render(this.video);
     } catch (err) {
       console.error('[Crisp] Frame error:', err);
       this.fail(err.message);
@@ -524,58 +724,71 @@ class VideoOverlay {
     }
 
     engine.device.queue.onSubmittedWorkDone().then(() => {
-      // Govern on real wall-clock time (includes frame import + overhead), so the
-      // governor targets true throughput and can actually match 60fps sources.
-      const wallMs = performance.now() - t0;
-      this.lastMs = wallMs;
-      this.lastGpuMs = engine.gpuMs || wallMs;
-      this._needsFirstFrame = false;   // a valid frame is now on the canvas, safe to show
-      this.adjust(wallMs);
-      if (settings.showStats) this.refreshStats();
       this.processing = false;
+      if (!this.active) return;
+      if (!engine.ready) { this.engineLost(); return; }
+      if (engine.error) { const msg = engine.error; engine.error = null; this.gpuError(msg); return; }
+      this.lastMs = performance.now() - t0;
+      this.lastGpuMs = engine.gpuMs || this.lastMs;
+      if (performance.now() >= this._winStart) this._winSr++;
+      this._needsFirstFrame = false;   // a valid frame is now on the canvas, safe to show
+      this.updateVisibility();
+      if (this._pending) {
+        this._pending = false;
+        if (!this.gated() && (!this.cantKeepUp || this.trialing)) this.processFrame();
+      }
     }).catch(() => { this.processing = false; });
   }
 
-  // Governor: keep the wall-clock frame time near the budget (a fraction of the
-  // damped, with a deadband. If pinned at min res and still can't match the
-  // source framerate, mark cantKeepUp → the loop passes the original through
-  // (never show choppy SR over smooth video).
-  adjust(dt) {
-    this.frameTimes.push(dt);
-    if (this.frameTimes.length > 8) this.frameTimes.shift();
-    const s = [...this.frameTimes].sort((a, b) => a - b);
-    const med = s[s.length >> 1] || dt;
-    const frameInt = this._frameInterval || 33;
+  // The GPU rejected the frame. The likeliest cause is memory -- the network's
+  // feature buffers are the only large allocation -- so fall back to the basic
+  // tier, which has none. If basic fails too, stop and say so.
+  gpuError(msg) {
+    console.warn('[Crisp] frame rejected by the GPU:', msg);
+    if (this.basic) { this.fail('GPU error: ' + msg); return; }
+    this.basic = true;
+    this.cfgBasic = null;       // force a reconfigure on the next frame
+    this._needsFirstFrame = true;
+    this.restartWindow();
+    this.updateVisibility();
+  }
 
-    // The governor no longer trades resolution for frame time -- the input is
-    // pinned to the source, so there is nothing to trade. Its only job now is
-    // deciding whether enhancing is affordable at all, with hysteresis so it
-    // does not flap on the boundary.
-    const limit = powerOf().giveUpAt;
-    if (med > frameInt * limit) this.cantKeepUp = true;
-    else if (med < frameInt * 0.95) this.cantKeepUp = false;
+  // The device is gone (driver reset, GPU switch, sleep). Everything built on
+  // it is dead, so drop the shared engine; the next start makes a new one.
+  engineLost() {
+    engine = null; enginePromise = null;
+    this.fail('the GPU was reset.\nClick SR to start again.');
   }
 
   refreshStats() {
-    if (!this.active) return;
-    const gpu = Math.round(this.lastGpuMs || this.lastMs);
-    if (this.cantKeepUp) {
-      this.statsEl.innerHTML =
-        '<span style="color:#2b3242;font-weight:700">Crisp</span> ' +
-        '<span style="color:#c07d2a">passthrough</span>\n' +
-        'too much to keep up with here,\nshowing the original instead';
+    if (!this.active || !settings.showStats) return;
+    const head = '<span style="color:#2b3242;font-weight:700">Crisp</span> ';
+    if (this.notWorthIt) {
+      this.statsEl.innerHTML = head + '<span style="color:#7a8494">idle</span>\n' +
+        'already about as sharp as\nyour screen, nothing to fix here';
       return;
     }
-    const avg = this.frameTimes.length
-      ? this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length : 0;
-    const fps = avg > 0 ? (1000 / avg).toFixed(0) : '…';
-    const nat = this._nH >= this.video.videoHeight ? ' native' : '';
+    const fps = Math.round(this.srcFps);
+    if (this.cantKeepUp) {
+      const pct = this.lastRatio != null ? Math.round(this.lastRatio * 100) + '%' : '';
+      const retry = Math.max(0, Math.ceil((this._nextTrialAt - performance.now()) / 1000));
+      this.statsEl.innerHTML = head + '<span style="color:#c07d2a">passthrough</span>\n' +
+        'your GPU kept up with ' + (pct || 'too few') + ' of frames,\nshowing the original instead\n' +
+        (this.trialing ? 'testing again now…' : 'trying again in ' + retry + 's');
+      return;
+    }
+    const nat = this.basic ? ' · basic, no AI'
+      : (this._nH >= this.video.videoHeight ? ' native' : '') + (this.lite ? ' · lite' : '');
     const shp = (settings.sharpness || 0) > 0.01 ? ' · sharp' : '';
-    this.statsEl.innerHTML =
-      '<span style="color:#2b3242;font-weight:700">Crisp</span> ' + (settings.power || 'auto') +
-      ' <span style="color:#6b7280">' + fps + 'fps' + shp + '</span>\n' +
+    // Delivered frames, not 1000/frame-time: that figure could read "45fps" on a
+    // 30fps video, or look fine while half the frames were being dropped.
+    const kept = this.lastRatio == null ? 'measuring…'
+      : Math.round(this.lastRatio * fps) + '/' + fps + ' fps';
+    this.statsEl.innerHTML = head + (settings.power || 'auto') +
+      ' <span style="color:#6b7280">' + kept + shp + '</span>\n' +
       'SR ' + this._nW + '×' + this._nH + nat + ' → ' + this._dW + '×' + this._dH + '\n' +
-      gpu + 'ms gpu · ' + Math.round(this._frameInterval || 33) + 'ms/frame';
+      Math.round(this.lastGpuMs || this.lastMs) + 'ms gpu' +
+      (fps ? ' · ' + Math.round(1000 / fps) + 'ms/frame' : '');
   }
 
   applySettings() {
@@ -584,6 +797,12 @@ class VideoOverlay {
     this.gateControls();
     this.showChrome();
     if (this.flyout.style.display !== 'none') { this.powerSeg.refresh(); this.lookSeg.refresh(); }
+    // Power and scale change what a frame costs, so an earlier "can't keep up"
+    // (or "fine") verdict no longer applies. Measure again from scratch.
+    const costKey = (settings.power || 'auto') + '|' + (settings.targetScale || 2);
+    if (this._costKey && this._costKey !== costKey) this.resetGovernor();
+    this._costKey = costKey;
+    this.updateVisibility();
   }
 
   destroy() {
@@ -641,21 +860,35 @@ function gearSvg() {
 function setSetting(patch) {
   Object.assign(settings, patch);
   chrome.runtime.sendMessage({ type: 'SET_SETTINGS', patch }, () => void chrome.runtime.lastError);
-  overlays.forEach((o) => o.applySettings?.());
+  onSettings();
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'SETTINGS_CHANGED' && msg.settings) {
     settings = msg.settings;
-    overlays.forEach((o) => o.applySettings?.());
+    onSettings();
   }
 });
+
+const siteBlocked = () => (settings.blockedSites || []).includes(location.hostname);
+
+// Blocking a site from the popup takes effect on open tabs immediately, and
+// unblocking brings the controls back without a reload.
+function onSettings() {
+  if (siteBlocked()) {
+    overlays.forEach((o) => o.destroy());
+    overlays.clear();
+    return;
+  }
+  overlays.forEach((o) => o.applySettings?.());
+  scan();
+}
 
 // ── Video discovery ──────────────────────────────────────────────
 const overlays = new Map();
 
 function hookVideo(video) {
-  if (overlays.has(video)) return;
+  if (overlays.has(video) || siteBlocked()) return;
   if (!video.videoWidth || !video.videoHeight) {
     video.addEventListener('loadedmetadata', () => hookVideo(video), { once: true });
     return;
@@ -664,7 +897,18 @@ function hookVideo(video) {
   if (rect.width < 100 || rect.height < 60) return;
   overlays.set(video, new VideoOverlay(video));
 }
-function scan() { document.querySelectorAll('video').forEach(hookVideo); }
+// Drop overlays whose <video> left the document. Checking isConnected catches a
+// video removed inside a container, which is how single-page sites remove them;
+// matching only removed nodes that are themselves <video> missed those and
+// leaked the overlay and its GPU canvas.
+function prune() {
+  overlays.forEach((o, v) => { if (!v.isConnected) { o.destroy(); overlays.delete(v); } });
+}
+function scan() {
+  prune();
+  if (siteBlocked() || !document.body) return;
+  document.querySelectorAll('video').forEach(hookVideo);
+}
 
 const mo = new MutationObserver((muts) => {
   for (const m of muts) {
@@ -672,16 +916,9 @@ const mo = new MutationObserver((muts) => {
       if (n.nodeName === 'VIDEO') hookVideo(n);
       else if (n.querySelectorAll) n.querySelectorAll('video').forEach(hookVideo);
     }
-    for (const n of m.removedNodes) {
-      if (n.nodeName === 'VIDEO' && overlays.has(n)) {
-        overlays.get(n).destroy(); overlays.delete(n);
-      }
-    }
+    if (m.removedNodes.length) prune();
   }
 });
-
-// Pause processing immediately when the tab is hidden (saves GPU).
-document.addEventListener('visibilitychange', () => {});
 
 // Keyboard shortcut: Alt+S toggles the largest visible video's SR.
 document.addEventListener('keydown', (e) => {
@@ -697,10 +934,9 @@ document.addEventListener('keydown', (e) => {
 });
 
 function init() {
-  if ((settings.blockedSites || []).includes(location.hostname)) {
-    console.log('[Crisp] disabled on', location.hostname);
-    return;
-  }
+  if (siteBlocked()) console.log('[Crisp] disabled on', location.hostname);
+  // Observe even when blocked, so unblocking from the popup needs no reload;
+  // hookVideo refuses while the site is blocked.
   if (document.body) { mo.observe(document.body, { childList: true, subtree: true }); scan(); }
 }
 

@@ -150,6 +150,14 @@ class WebGPUSR {
       console.error('[Crisp] GPU device lost:', info.message);
       this.ready = false;
     });
+    // A rejected submission (out of memory, a buffer over the binding limit, a
+    // validation failure) executes nothing, yet onSubmittedWorkDone still
+    // resolves -- so without this a frame that never rendered looks delivered.
+    this.error = null;
+    this.device.addEventListener('uncapturederror', (e) => {
+      this.error = (e.error && e.error.message) || 'GPU error';
+      console.error('[Crisp] GPU error:', this.error);
+    });
     this.sampler = this.device.createSampler({
       magFilter: 'linear', minFilter: 'linear',
       addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge',
@@ -184,6 +192,7 @@ class WebGPUSR {
     this.w = {};
     this.C = 32; this.scale = 2;
     this.exits = [];        // early-exit depths this model carries, if any
+    this.anchor = false;    // model adds the nearest-upsampled input (manifest "anchor")
     this.depth = null;      // null = deepest exit
     this._modelUrl = url;
     // Optional sibling manifest (e.g. span_lite_2x.json) sets the channel count.
@@ -195,6 +204,7 @@ class WebGPUSR {
         if (m.channels) this.C = m.channels | 0;
         if (m.scale) this.scale = m.scale | 0;
         if (Array.isArray(m.exits)) this.exits = m.exits.map((d) => d | 0);
+        this.anchor = m.anchor === true;
       }
     } catch (_) { /* no manifest → keep defaults (32ch, 2×) */ }
     this._buildPipelines();
@@ -293,16 +303,24 @@ class WebGPUSR {
     this.pipe.attn = mk(EN + buildAttn(T));
     this.pipe.cat = mk(EN + buildCat(T, this.C));
     if (FOLD_CONV_LAST) this.pipe.catfused = mk(EN + buildCatFused(T, this.C));
-    this.pipe.shuffle = mk(EN + buildShuffle(T));
+    this.pipe.shuffle = mk(EN + buildShuffle(T, this.anchor));
     this.pipe.finish = mk(SHADER_FINISH);     // reads a texture, always f32
     this.pipe.sharpen = mk(SHADER_SHARPEN);   // contrast-adaptive sharpen
+    this.pipe.basic = mk(SHADER_BASIC);       // no-network tier: bicubic from the video
   }
 
   // ── Allocate buffers + bind groups ──
   // inW/inH: neural input resolution (governed). dispW/dispH: final display
   // size (defaults to 2× input). A Catmull-Rom finishing pass resamples the
   // neural 2× output to the display size when they differ.
-  configure(canvas, inW, inH, dispW, dispH) {
+  // opts.neural === false configures the basic tier instead: no network, so no
+  // feature buffers at all -- on the weak GPUs that tier exists for, the
+  // network's buffers alone can be hundreds of MB.
+  configure(canvas, inW, inH, dispW, dispH, opts = {}) {
+    this.error = null;
+    if (opts.neural === false) return this._configureBasic(canvas, dispW, dispH);
+    this.neural = true;
+    this.basicTex?.destroy?.(); this.basicTex = null;
     const d = this.device;
     inW &= ~1; inH &= ~1;
     this.inW = inW; this.inH = inH;
@@ -347,6 +365,93 @@ class WebGPUSR {
     });
 
     this._buildBindGroups();
+  }
+
+  _configureBasic(canvas, dispW, dispH) {
+    const d = this.device;
+    this.neural = false;
+    Object.values(this.buf).forEach((b) => b.destroy?.());
+    this.buf = {};
+    this.outTex?.destroy?.(); this.outTex = null;
+    this.dispTex?.destroy?.(); this.dispTex = null;
+    this.basicTex?.destroy?.();
+    this.sharpTex?.destroy?.();
+    dispW = Math.max(2, Math.round(dispW)); dispH = Math.max(2, Math.round(dispH));
+    this.dispW = dispW; this.dispH = dispH;
+    const TEX = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING;
+    this.basicTex = d.createTexture({ size: [dispW, dispH], format: 'rgba8unorm', usage: TEX });
+    this.sharpTex = d.createTexture({ size: [dispW, dispH], format: 'rgba8unorm', usage: TEX });
+    if (!this.sharpParams) {
+      this.sharpParams = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    }
+    this._basicParams = this._u([dispW, dispH]);
+    this.ctx = canvas.getContext('webgpu');
+    canvas.width = dispW; canvas.height = dispH;
+    this.ctx.configure({
+      device: d, format: 'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+      alphaMode: 'opaque',
+    });
+    this.sharpenBG = d.createBindGroup({
+      layout: this.pipe.sharpen.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.basicTex.createView() },
+        { binding: 1, resource: this.sharpTex.createView() },
+        { binding: 2, resource: { buffer: this.sharpParams } },
+      ],
+    });
+  }
+
+  /** Basic tier: bicubic straight from the video to display size, then the
+   *  same sharpen + look pass the network output gets. A few ms even on an
+   *  integrated GPU. Call configure(..., { neural: false }) first. */
+  renderBasic(video) {
+    if (!this.ready || !this.ctx || this.neural !== false) return;
+    const d = this.device;
+    const bg = d.createBindGroup({
+      layout: this.pipe.basic.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: d.importExternalTexture({ source: video }) },
+        { binding: 1, resource: this.basicTex.createView() },
+        { binding: 2, resource: { buffer: this._basicParams } },
+      ],
+    });
+    const enc = d.createCommandEncoder();
+    const sampleTs = this.hasTS && !this.tsBusy;
+    const pass = enc.beginComputePass(sampleTs
+      ? { timestampWrites: { querySet: this.querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } }
+      : undefined);
+    pass.setPipeline(this.pipe.basic);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(Math.ceil(this.dispW / 16), Math.ceil(this.dispH / 16), 1);
+    pass.end();
+    const canvasTex = this.ctx.getCurrentTexture();
+    if (this.sharpen > 0.001 || this.look !== 'natural') {
+      d.queue.writeBuffer(this.sharpParams, 0, this._sharpenUniform());
+      const sp = enc.beginComputePass();
+      sp.setPipeline(this.pipe.sharpen);
+      sp.setBindGroup(0, this.sharpenBG);
+      sp.dispatchWorkgroups(Math.ceil(this.dispW / 16), Math.ceil(this.dispH / 16), 1);
+      sp.end();
+      enc.copyTextureToTexture({ texture: this.sharpTex }, { texture: canvasTex }, [this.dispW, this.dispH, 1]);
+    } else {
+      enc.copyTextureToTexture({ texture: this.basicTex }, { texture: canvasTex }, [this.dispW, this.dispH, 1]);
+    }
+    if (sampleTs) {
+      enc.resolveQuerySet(this.querySet, 0, 2, this.tsResolve, 0);
+      enc.copyBufferToBuffer(this.tsResolve, 0, this.tsRead, 0, 16);
+    }
+    d.queue.submit([enc.finish()]);
+    if (sampleTs) {
+      this.tsBusy = true;
+      this.tsRead.mapAsync(GPUMapMode.READ).then(() => {
+        const t = new BigInt64Array(this.tsRead.getMappedRange());
+        const ns = Number(t[1] - t[0]);
+        if (ns > 0) this.gpuMs = ns / 1e6;
+        this.tsRead.unmap();
+        this.tsBusy = false;
+      }).catch(() => { this.tsBusy = false; });
+    }
   }
 
   _u(arr) {
@@ -503,6 +608,8 @@ class WebGPUSR {
         { binding: 0, resource: { buffer: B.up } },
         { binding: 1, resource: this.outTex.createView() },
         { binding: 2, resource: { buffer: this._u([inW, inH, this.scale, 3]) } },
+        // anchored models: the preprocessed input, added back at nearest
+        ...(this.anchor ? [{ binding: 3, resource: { buffer: B.x3 } }] : []),
       ],
     });
 
@@ -602,7 +709,7 @@ class WebGPUSR {
   static looks() { return LOOK_NAMES.slice(); }
 
   render(video) {
-    if (!this.ready || !this.ctx) return;
+    if (!this.ready || !this.ctx || this.neural === false) return;
     const d = this.device;
     const { inW, inH } = this;
     const gx16 = Math.ceil(inW / 16), gy16 = Math.ceil(inH / 16);
@@ -982,11 +1089,15 @@ ${macs}  }
 }`;
 };
 
-const buildShuffle = (T) => /* wgsl */`
+// anchor: add the LR input back at nearest (every sub-pixel of an output pixel
+// reads its own LR pixel), matching SPANLite(anchor=True)'s repeat_interleave
+// before PixelShuffle. x3 holds the input mean-subtracted, so MEAN goes back on.
+const buildShuffle = (T, anchor = false) => /* wgsl */`
 @group(0) @binding(0) var<storage, read> inp: array<${T}>;
 @group(0) @binding(1) var outTex: texture_storage_2d<rgba8unorm, write>;
 struct P { W: u32, H: u32, scale: u32, ch: u32 };
 @group(0) @binding(2) var<uniform> p: P;
+${anchor ? `@group(0) @binding(3) var<storage, read> x3: array<${T}>;` : ''}
 
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -999,9 +1110,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let base = sy * p.scale + sx;
   let px = p.W * p.H;
   let idx = iy * p.W + ix;
-  let r = clamp(f32(inp[(0u * s2 + base) * px + idx]), 0.0, 1.0);
-  let g = clamp(f32(inp[(1u * s2 + base) * px + idx]), 0.0, 1.0);
-  let b = clamp(f32(inp[(2u * s2 + base) * px + idx]), 0.0, 1.0);
+  var rr = f32(inp[(0u * s2 + base) * px + idx]);
+  var gg = f32(inp[(1u * s2 + base) * px + idx]);
+  var bb = f32(inp[(2u * s2 + base) * px + idx]);
+  ${anchor ? `rr += f32(x3[idx]) + ${MEAN[0]};
+  gg += f32(x3[px + idx]) + ${MEAN[1]};
+  bb += f32(x3[2u * px + idx]) + ${MEAN[2]};` : ''}
+  let r = clamp(rr, 0.0, 1.0);
+  let g = clamp(gg, 0.0, 1.0);
+  let b = clamp(bb, 0.0, 1.0);
   textureStore(outTex, vec2u(X, Y), vec4f(r, g, b, 1.0));
 }`;
 
@@ -1040,6 +1157,47 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var n = 0; n < 4; n++) {
       let xx = clamp(ix - 1 + n, 0, W - 1);
       row += wx[n] * textureLoad(src, vec2i(xx, yy), 0).rgb;
+    }
+    col += wy[m] * row;
+  }
+  textureStore(dst, vec2u(gid.x, gid.y), vec4f(clamp(col, vec3(0.0), vec3(1.0)), 1.0));
+}`;
+
+// Basic tier: Catmull-Rom straight from the video's external texture to the
+// display size. Same kernel as SHADER_FINISH, but reading the decoded frame
+// directly, so there is no network, no preprocess pass and no feature buffer.
+const SHADER_BASIC = /* wgsl */`
+@group(0) @binding(0) var src: texture_external;
+@group(0) @binding(1) var dst: texture_storage_2d<rgba8unorm, write>;
+struct P { dstW: u32, dstH: u32, a: u32, b: u32 };
+@group(0) @binding(2) var<uniform> p: P;
+
+fn crw(t: f32) -> vec4<f32> {
+  let t2 = t * t; let t3 = t2 * t;
+  return vec4<f32>(
+    -0.5 * t3 + t2 - 0.5 * t,
+     1.5 * t3 - 2.5 * t2 + 1.0,
+    -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+     0.5 * t3 - 0.5 * t2,
+  );
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x >= p.dstW || gid.y >= p.dstH) { return; }
+  let dims = textureDimensions(src);
+  let W = i32(dims.x); let H = i32(dims.y);
+  let sx = (f32(gid.x) + 0.5) * f32(dims.x) / f32(p.dstW) - 0.5;
+  let sy = (f32(gid.y) + 0.5) * f32(dims.y) / f32(p.dstH) - 0.5;
+  let ix = i32(floor(sx)); let iy = i32(floor(sy));
+  let wx = crw(sx - f32(ix)); let wy = crw(sy - f32(iy));
+  var col = vec3<f32>(0.0);
+  for (var m = 0; m < 4; m++) {
+    let yy = clamp(iy - 1 + m, 0, H - 1);
+    var row = vec3<f32>(0.0);
+    for (var n = 0; n < 4; n++) {
+      let xx = clamp(ix - 1 + n, 0, W - 1);
+      row += wx[n] * textureLoad(src, vec2i(xx, yy)).rgb;
     }
     col += wy[m] * row;
   }

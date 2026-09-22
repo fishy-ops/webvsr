@@ -5,8 +5,8 @@ let settings = {
 };
 
 const POWER_HINT = {
-  auto: 'Enhances at the video\u2019s own resolution and steps aside if your machine can\u2019t keep up. Right for almost everyone.',
-  battery: 'Caps very large video at 720p and gives up sooner, to keep fans quiet and battery drain down.',
+  auto: 'Uses the full model when your machine can keep up, and steps down to a lighter one, then to plain sharpening, when it can\u2019t. Right for almost everyone.',
+  battery: 'Starts on the lighter model and caps very large video at 720p, to keep fans quiet and battery drain down.',
   max: 'Keeps enhancing even if the frame rate dips. Choose this if you care more about the picture than perfect smoothness.',
 };
 
