@@ -26,8 +26,8 @@ video alone so it isn't working your GPU for nothing.
   compute shaders (2×2 register-blocked convolutions), zero-copy from the video
   via `importExternalTexture`.
 - **Scales to the machine it's on.** If the full model can't keep up, Crisp
-  steps down to a lite model (8,956 parameters, ~3.3x cheaper, still better than
-  bicubic on 19 of 19 test clips), then to plain sharpening with no network,
+  steps down to a lite model (8,956 parameters, ~3.3x cheaper, +8.0% over
+  bicubic on 19 test clips and ahead on 18), then to plain sharpening with no network,
   and only then to the original video. It measures frames actually delivered,
   not a timing estimate.
 - **Never makes playback worse.** A frame-time governor (like a game engine's

@@ -19,11 +19,12 @@
   "_note": "Which checkpoint each shipped .bin was exported from. The .bin files are tracked in git and the .pth files are not, so without this record the two drift silently -- they already did once, and two sessions of evaluation scored a model users do not run. Verify with training/eval/verify_shipped.py before reporting any \"shipped\" number.",
   "2x_lite": {
     "binary": "extension/models/span_lite_2x_c8.bin",
-    "checkpoint": "checkpoints_c8/anchor_2x_c8.pth",
+    "checkpoint": "checkpoints_c8/anchor_fdl_2x_c8.pth",
     "channels": 8,
     "scale": 2,
-    "sha256": "f6b56d13fa04a07f31b7b6d1ffc7c9401faa067e54a666620be5552d5a37a9aa",
-    "origin": "/tank/webvsr/ckpt35_c8a/best_phase2.pth",
-    "note": "Lite tier (RESEARCH.md 35): 8 channels + anchor skip, 8,956 params, ~3.3x cheaper than 2x. Used when the 2x model cannot keep up, and by default on Battery. +5.5% camera DISTS vs bicubic, 19/19 clips."
+    "sha256": "bda177567d2e42f7cc2bc5524b2370c8f06cfa264f2d98bb960dd491b790a174",
+    "origin": "/tank/webvsr/ckpt36_c8afdl4/best_phase2.pth",
+    "note": "Lite tier (RESEARCH.md 35-36): 8 channels + anchor skip + FDL fine-tune, 8,956 params, ~3.3x cheaper than 2x. Used when the 2x model cannot keep up, and by default on Battery. +8.0% camera DISTS vs bicubic, 18/19 clips; |tLP| -0.00122 vs bicubic.",
+    "superseded": "was checkpoints_c8/anchor_2x_c8.pth (c8a); swapped after RESEARCH.md 36 -- a 4-epoch FDL fine-tune beats it at t=2.93 on 15/19 clips and fixes its flicker."
   }
 }

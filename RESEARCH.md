@@ -2030,6 +2030,54 @@ Capacity has to come from a cheaper model, which is what this section does.
 - Anime4K / websr as an opt-in pretrained tier: MIT, real-time, unevaluated on
   this benchmark.
 
+## 36. FDL makes the lite model the best-ranked model here
+
+Two follow-ups to §35, run side by side:
+
+- **c8afdl4** -- `c8a` fine-tuned with FDL (`--w-fdl 0.75`, the `fdlperc`
+  recipe from §34: no fidelity phase, lr 5e-5). Planned at 20 epochs, but FDL
+  cost 1,108 s per epoch alongside another run, so it was cut to **4**. With the
+  trainer's 5-epoch warmup it never reached full learning rate: a gentle tune.
+- **c16a** -- the anchor skip at full width, from scratch, 30 epochs.
+
+19 real-camera clips, CRF 28, paired against c8afdl4:
+
+| model | params | cam DISTS vs bic | wins | \|tLP\| vs bic | render DISTS | ΔDISTS | t |
+|---|---|---|---|---|---|---|---|
+| **c8afdl4** | 8,956 | **+8.0%** | 18/19 | **-0.00122** | **+19.6%** | -- | -- |
+| perc | 33,388 | +7.1% | 19/19 | -0.00009 | +14.8% | +0.00161 | +1.01 |
+| c16a | 33,388 | +6.4% | 19/19 | +0.00015 | +11.8% | +0.00313 | +1.91 |
+| c8a | 8,956 | +5.5% | 19/19 | +0.00058 | +7.4% | +0.00474 | +2.93 |
+
+**The lite model is now the top-ranked model on this benchmark.** It beats the
+`c8a` it replaces at t = 2.93 on 15/19 clips, at identical cost, and it turns
+lite's one weakness around: its flicker is now *better* than bicubic's, the best
+temporal behaviour of any model here. It is ahead of `perc` too, but not
+significantly (t = 1.01), so `perc` stays the default.
+
+The one clip it loses to bicubic is `controlled_burn_1080p` (fire and smoke),
+by 0.1274 against 0.1240 -- a clip where `perc` itself only just beats bicubic
+(0.1230). FDL matches feature statistics, and DISTS measures something
+similar, so the win had to be checked by eye before it was trusted: side by side
+with bicubic, `c8a` and `perc` (`evidence/36_lite_fdl_life.png`) it is sharper on
+edges and shows no invented texture on the flat wall or counter. tLP is LPIPS,
+not DISTS, and it improved too, which is the independent evidence. Engine
+parity with PyTorch: max |diff| 1/255.
+
+**Shipped** as `span_lite_2x_c8.bin`, replacing `c8a`. PROVENANCE records both.
+
+**c16a does not ship.** From scratch it ties `perc` on validation (0.2004
+against 0.1996) and trails it on the benchmark (+6.4% against +7.1%), though
+not significantly. The anchor helped at C=8, where the network has the least
+capacity to spend on reproducing the input; at C=16 the evidence is null.
+
+### What this says to try next
+
+§34 left `fdlperc` unshipped: at C=16, FDL traded camera DISTS (+5.8%) for
+renders and flicker. Here, on an anchored model, four gentle epochs of it gained
+on **all three** columns. The obvious experiment is `perc` + anchor + a short FDL
+tune, and a longer lite FDL tune now that four epochs are known to help.
+
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
