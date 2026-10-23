@@ -2162,7 +2162,7 @@ below the headroom limit (80%), so the two cannot oscillate.
 ## 5. How this research was produced, and what to trust
 
 Retrieved from the arXiv API and answered strictly from retrieved abstracts, via
-`llm-search` in the `claude-local-llm` plugin. Two limits worth knowing:
+`llm-search` in my local-LLM tooling. Two limits worth knowing:
 
 - **Abstracts only.** Where a fact lives in a paper's body — such as which
   architecture won a challenge track — abstract-level retrieval cannot find it.
